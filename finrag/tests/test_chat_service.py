@@ -9,6 +9,7 @@ from src.generation.narrative_quotes import VerifiedQuote
 from src.financial.models import ValueType
 from src.orchestration.models import EvidenceType
 from src.retrieval.semantic_query_parser import SemanticQueryResult
+from src.retrieval.structured_lookup import DirectAnswer
 from src.schemas import Decision, RetrievalBundle, Scope
 from src.tools.document_search import DocumentSearchTool
 
@@ -90,6 +91,22 @@ def _service(*, semantic_parser=None) -> ChatService:
 
 
 class ChatServiceOrchestrationTests(unittest.TestCase):
+    def test_exact_table_lookup_bypasses_ranked_search_and_generation(self) -> None:
+        service = _service()
+        direct = DirectAnswer(
+            "## BALANCE SHEETS\n\n| Year | 2025 |\n| --- | --- |\n| Assets | 619,003 |\n\n[S1]",
+            [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
+            "exact_table",
+        )
+        service.structured_lookup = SimpleNamespace(answer=lambda *_, **__: direct)
+
+        result = service.ask("Give me the exact balance sheet table in MSFT's 2025 10-K")
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(result.trace["retrieval"]["mode"], "exact_table")
+        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(service.generator.calls, [])
+
     def test_verified_calculation_displays_currency_and_scale(self) -> None:
         facts = (
             SimpleNamespace(
@@ -269,7 +286,9 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         service.multihop_planner = FakePlanner()
         service.multihop_executor = FakeExecutor()
 
-        result = service.ask("Compare MSFT and TSLA revenue in their 2025 10-Ks.")
+        result = service.ask(
+            "Compare MSFT and TSLA revenue in their 2025 10-Ks and explain the difference."
+        )
 
         self.assertEqual(result.decision, Decision.ANSWERED)
         self.assertTrue(result.trace["multihop"]["selected"])

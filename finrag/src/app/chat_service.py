@@ -36,6 +36,7 @@ from src.retrieval.semantic_query_parser import (
     should_use_semantic_fallback,
 )
 from src.retrieval.scope_policy import resolve_scope
+from src.retrieval.structured_lookup import StructuredDocumentLookup
 from src.retrieval.vector_store import FinancialVectorStore
 from src.schemas import (
     ChatResult,
@@ -90,6 +91,7 @@ class ChatService:
                 context_builder=ContextBuilder(paths.parent_docstore_dir),
                 reranker=reranker,
             )
+            self.structured_lookup = StructuredDocumentLookup(paths.parent_docstore_dir)
             self.document_search_tool = DocumentSearchTool(self.retriever)
             self.generator = AnswerGenerator()
             self.semantic_parser = build_semantic_query_parser_from_environment()
@@ -683,6 +685,29 @@ class ChatService:
             )
             self._record({**trace, "decision": result.decision.value})
             return result
+
+        lookup = getattr(self, "structured_lookup", None)
+        if lookup is not None:
+            direct = lookup.answer(
+                effective_question,
+                resolution.scope,
+                wants_complete_table=understanding.wants_complete_table,
+            )
+            if direct is not None:
+                trace["retrieval"] = {
+                    "mode": direct.mode,
+                    "source_ids": [source["id"] for source in direct.sources],
+                }
+                result = ChatResult(
+                    Decision.ANSWERED,
+                    expand_citations(direct.answer, direct.sources),
+                    resolution.scope,
+                    direct.sources,
+                    resolution.inherited_fields,
+                    trace,
+                )
+                self._record({**trace, "decision": result.decision.value})
+                return result
 
         retrieval_query = self._retrieval_query(
             understanding.normalized_query or effective_question,

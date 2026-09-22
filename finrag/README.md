@@ -49,12 +49,15 @@ when retrieval is weak.
   to the original RRF order when disabled, unconfigured, or unavailable.
 - **Parent-child indexing:** small child chunks improve retrieval precision while
   larger parent chunks preserve surrounding financial context.
+- **Complete filing structures:** named tables and 10-K item lists are read from
+  indexed parent records when a matching full structure is available, so ranked
+  search cannot omit their rows.
 - **Financial-safe compression:** context reduction is extractive and preserves
   tables, figures, units, dates, periods, and accounting qualifiers.
 - **Coverage guardrails:** comparison answers require evidence for every requested
   company/year/document group.
 - **Validated citations:** the model may cite only retrieved source IDs. Invalid
-  output is retried and can fall back to cited evidence excerpts.
+  output is retried; an invalid answer is withheld instead of showing raw excerpts.
 - **Immutable indexes:** every index version has isolated Qdrant data, parent records,
   lexical records, and a reproducibility manifest.
 - **Traceable operation:** safe API traces and local JSONL query logs expose routing
@@ -453,7 +456,7 @@ and document type without losing earlier fields; retrieval and answer generation
 continue to use the original financial question. A new substantive question or a
 filter change clears the pending state.
 
-### Optional multi-hop comparisons
+### Optional multi-hop questions
 
 Multi-hop orchestration is disabled by default so an existing deployment keeps its
 current latency and model-call profile. Enable it after running the test suite and a
@@ -465,9 +468,10 @@ FINRAG_MULTIHOP_MAX_SEARCHES=4
 FINRAG_MULTIHOP_MAX_CALCULATIONS=6
 ```
 
-When enabled, simple questions and complete-table requests retain the original
-single-search path. Comparisons and compound questions use a bounded structured
-plan. Each requirement searches one document type across exact company/year groups.
+When enabled, simple questions, ordinary comparisons, and complete-table requests
+retain the single-search path. Questions requesting arithmetic or multiple tasks
+use a bounded structured plan. Each requirement searches one document type across
+exact company/year groups.
 Numeric requirements pass through extraction, normalization, and deterministic
 source validation; calculations accept only validated fact IDs. Evidence from all
 searches is deduplicated and assigned globally unique `S#` IDs. For calculated
@@ -489,6 +493,15 @@ Run the five indexed comparison checks with:
 
 This uses the existing parent chunks, including embedded Markdown/HTML tables. It
 does not require re-ingestion, SQLite, a separate table index, or a table-search tool.
+
+Complete named tables and 10-K item lists use a smaller direct path: after scope
+resolution, the app scans matching indexed parent records for a table heading
+matching the requested subject, or derives the item list from metadata. The
+matching full structure is displayed with source links. When no matching full
+structure is available, the question continues through hybrid search, optional
+reranking, compression, and generation.
+LangGraph is not needed for this bounded routing; adding it would not change the
+retrieved evidence or repair a truncated source table.
 
 ### Optional Cohere reranking
 
@@ -638,8 +651,8 @@ fiscal year, and evidence basis explicit.
   a worker thread.
 - Local browser history and theme preferences live in `localStorage`; the backend
   does not provide user accounts or persistent conversation storage.
-- Phase 1 does not include autonomous agents, SQL/table tools, a calculator, or live
-  financial-data connectors.
+- Phase 1 does not include autonomous agents, SQL tools, or live financial-data
+  connectors. Its calculator is limited to validated retrieved figures.
 - No software license is currently included in this repository. Add one before public
   redistribution.
 

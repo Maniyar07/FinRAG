@@ -24,9 +24,8 @@ from src.schemas import Scope
 
 
 COMPOUND_QUESTION_RE = re.compile(
-    r"\b(?:compare|comparison|versus|vs\.?|difference|change|growth|trend|"
-    r"higher|lower|improv(?:e|ed|ement)|which|across)\b|"
-    r"\b(?:and|also)\s+(?:why|how|what)\b|[;]",
+    r"\b(?:and|also)\s+(?:explain|identify|calculate|summarize|discuss|"
+    r"compare|why|how|what)\b|[;]",
     re.IGNORECASE,
 )
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
@@ -100,13 +99,13 @@ Correction from a previous invalid plan, if any:
 
 
 def should_use_multihop(question: str, scope: Scope) -> bool:
-    """Route comparisons or clearly compound questions to the bounded planner."""
+    """Use planning for arithmetic or multiple requested tasks."""
     cleaned = " ".join(str(question).split())
     if not cleaned or not scope.complete:
         return False
     return (
-        scope.is_comparison
-        or cleaned.count("?") > 1
+        cleaned.count("?") > 1
+        or bool(CALCULATION_INTENT_RE.search(cleaned))
         or bool(COMPOUND_QUESTION_RE.search(cleaned))
     )
 

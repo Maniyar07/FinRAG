@@ -193,32 +193,6 @@ class AnswerGenerator:
             return f"missing_narrative_citation_groups:{labels}"
         return None
 
-    @staticmethod
-    def _extractive_fallback(bundle: RetrievalBundle) -> str:
-        """Return short, cited evidence excerpts if both synthesis attempts are invalid."""
-        blocks = bundle.context.split("\n\n---\n\n")
-        excerpts: list[str] = []
-        for source, block in zip(bundle.sources[:2], blocks[:2]):
-            body = block.split("\n", 1)[1] if "\n" in block else block
-            compact = " ".join(body.split())
-            if not compact:
-                continue
-            excerpt = compact[:600]
-            if len(compact) > 600:
-                sentence_end = max(excerpt.rfind(". "), excerpt.rfind("; "))
-                if sentence_end >= 200:
-                    excerpt = excerpt[: sentence_end + 1]
-                else:
-                    excerpt = excerpt.rstrip() + "…"
-            excerpt = re.sub(r"\[(?:SOURCE|SECTION|SPEAKER)[^\]]*\]", "", excerpt).strip()
-            excerpts.append(f"- {excerpt} [{source['id']}]")
-        if not excerpts:
-            return UNVERIFIABLE_RESPONSE
-        return (
-            "The generated synthesis did not pass format or citation validation. "
-            "The most relevant retrieved evidence is:\n\n" + "\n\n".join(excerpts)
-        )
-
     def _invoke(
         self,
         *,
@@ -381,6 +355,7 @@ class AnswerGenerator:
             if (
                 last_validation.valid
                 and last_validation.reason == "valid_structured_ids_appended"
+                and not wants_table
                 and (fail_closed_on_invalid or self._compound_answer_requires_inline_citations(answer))
             ):
                 last_validation = AnswerValidation(
@@ -471,13 +446,12 @@ class AnswerGenerator:
                 tuple(previews),
             )
 
-        fallback = self._extractive_fallback(bundle)
-        if fallback != UNVERIFIABLE_RESPONSE:
-            fallback = expand_citations(fallback, bundle.sources)
-            reason = f"extractive_fallback_after:{last_validation.reason}"
-        else:
-            reason = last_validation.reason
-        return GenerationResult(fallback, len(instructions), reason, tuple(previews))
+        return GenerationResult(
+            UNVERIFIABLE_RESPONSE,
+            len(instructions),
+            f"generation_validation_failed:{last_validation.reason}",
+            tuple(previews),
+        )
 
     def generate(
         self,

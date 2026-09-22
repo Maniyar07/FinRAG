@@ -182,7 +182,7 @@ class AnswerGeneratorTests(unittest.TestCase):
         self.assertIn("MSFT 2024 Transcript", result.answer)
         self.assertEqual(chain.calls, 2)
 
-    def test_two_invalid_answers_return_cited_evidence_fallback(self) -> None:
+    def test_two_invalid_answers_do_not_show_unrelated_evidence(self) -> None:
         chain = FakeChain(
             [
                 {"answer": "Draft one.", "source_ids": []},
@@ -192,9 +192,9 @@ class AnswerGeneratorTests(unittest.TestCase):
         result = AnswerGenerator(chain=chain).generate_with_trace(
             "What did Microsoft management say about AI infrastructure?", bundle()
         )
-        self.assertIn("most relevant retrieved evidence", result.answer)
-        self.assertIn("MSFT 2024 Transcript", result.answer)
-        self.assertTrue(result.validation_reason.startswith("extractive_fallback_after:"))
+        self.assertIn("validation failed", result.answer)
+        self.assertNotIn("MSFT 2024 Transcript", result.answer)
+        self.assertTrue(result.validation_reason.startswith("generation_validation_failed:"))
 
     def test_multihop_third_attempt_repairs_missing_narrative_group(self) -> None:
         role = [{"requirement_id": "explanation", "evidence_type": "narrative"}]

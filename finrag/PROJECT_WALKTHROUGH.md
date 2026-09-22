@@ -337,8 +337,15 @@ checks that:
   accepted.
 
 An invalid answer receives one repair attempt. If both attempts fail, the system
-returns short cited evidence excerpts. If no safe fallback can be constructed, it
-returns an explicit validation-failure response.
+returns an explicit validation-failure response. It does not display arbitrary
+retrieved fragments as a substitute for the requested answer.
+
+Complete named tables and 10-K item lists are read directly from indexed parent
+records after scope resolution when a matching full structure is available. The
+table title is matched against the question; it is not selected by company name
+or a fixed list of statement titles. This keeps every row or item heading
+together and bypasses ranking, compression, and answer generation for those
+requests.
 
 ### Step 11: expand and present citations
 
@@ -1190,4 +1197,3 @@ finrag/
 > strong retrieval coverage and also gives us a clear next target: improve factual
 > precision, especially for numeric financial answers, before expanding into a
 > production-scale service.”
-

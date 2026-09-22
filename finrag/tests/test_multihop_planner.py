@@ -242,7 +242,10 @@ class MultiHopPlannerTests(unittest.TestCase):
         )
         simple = Scope(("MSFT",), ("2025",), "10K")
 
-        self.assertTrue(should_use_multihop("Compare their revenue.", comparison))
+        self.assertFalse(should_use_multihop("Compare their revenue.", comparison))
+        self.assertTrue(
+            should_use_multihop("Compare their revenue and explain the difference.", comparison)
+        )
         self.assertFalse(should_use_multihop("What was revenue?", simple))
         self.assertTrue(
             should_use_multihop("What was revenue; and why did it change?", simple)
