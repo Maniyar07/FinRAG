@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# Evaluation-only dependencies. Kept separate from the application runtime.
+# These pins avoid pip backtracking/conflicts between ragas, instructor, jiter,
+# and the OpenAI SDK while staying compatible with langchain-openai==1.6.0.
+instructor==1.17.0
+jiter==0.14.0
+langchain-community==0.3.31
+ragas==0.4.3

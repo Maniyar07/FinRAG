@@ -1,0 +1,16 @@
+# Tested target: Python 3.11 or 3.12
+langchain-core==1.6.1
+langchain-text-splitters==1.1.2
+langchain-openai==1.6.0
+langchain-qdrant==1.1.0
+openai==2.45.0
+qdrant-client==1.19.0
+tiktoken==0.14.0
+
+beautifulsoup4==4.15.0
+llama-cloud>=2.8,<3
+
+python-dotenv==1.2.3
+streamlit==1.62.0
+fastapi==0.141.1
+uvicorn==0.52.4

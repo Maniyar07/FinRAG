@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Grounded financial analysis from indexed filings and earnings calls.">
+  <title>FinRAG Analyst</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell" id="appShell">
+    <aside class="sidebar" id="sidebar" aria-label="Conversations and research settings">
+      <div class="sidebar-top">
+        <a class="brand" href="/" aria-label="FinRAG home">
+          <span class="brand-mark" aria-hidden="true">F</span>
+          <span class="brand-copy">
+            <strong>FinRAG</strong>
+            <span>Financial intelligence</span>
+          </span>
+        </a>
+        <button class="icon-button desktop-collapse" id="collapseSidebar" type="button" aria-label="Collapse sidebar" aria-expanded="true">
+          <span aria-hidden="true">&lsaquo;</span>
+        </button>
+      </div>
+
+      <button class="new-chat-button" id="newChatButton" type="button">
+        <span class="button-symbol" aria-hidden="true">+</span>
+        <span>New analysis</span>
+      </button>
+
+      <details class="filter-panel" open>
+        <summary class="section-heading scope-summary">
+          <div class="section-title">
+            <svg class="section-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <ellipse cx="12" cy="5" rx="7" ry="3"></ellipse>
+              <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"></path>
+              <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"></path>
+            </svg>
+            <h2 id="filterHeading">Research scope</h2>
+          </div>
+          <span class="scope-heading-actions">
+            <span class="scope-status" id="scopeStatus">Loading</span>
+            <span class="scope-chevron" aria-hidden="true"></span>
+          </span>
+        </summary>
+
+        <div class="filter-content" aria-labelledby="filterHeading">
+          <div class="field-group">
+            <label class="field-label" for="indexFilter">INDEX</label>
+            <select id="indexFilter" disabled>
+              <option>Loading indexes...</option>
+            </select>
+          </div>
+
+          <div class="filter-grid">
+            <div class="field-group">
+              <span class="field-label" id="companyLabel">COMPANY</span>
+              <div class="company-picker" id="companyPicker">
+                <button
+                  class="company-trigger"
+                  id="companyPickerButton"
+                  type="button"
+                  role="combobox"
+                  aria-labelledby="companyLabel companySelectedText"
+                  aria-controls="companyMenu"
+                  aria-expanded="false"
+                  aria-haspopup="listbox"
+                  disabled
+                >
+                  <span id="companySelectedText">All</span>
+                  <span class="select-chevron" aria-hidden="true"></span>
+                </button>
+                <div class="company-menu" id="companyMenu" role="listbox" aria-labelledby="companyLabel" hidden></div>
+                <select class="native-company-select" id="companyFilter" tabindex="-1" aria-hidden="true" disabled>
+                  <option value="">All companies</option>
+                </select>
+              </div>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="yearFilter">FISCAL YEAR</label>
+              <select id="yearFilter" disabled>
+                <option value="">All years</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="documentFilter">EVIDENCE BASIS</label>
+            <select id="documentFilter" disabled>
+              <option value="">10-K and transcript</option>
+            </select>
+          </div>
+
+          <details class="diagnostics trace-control" id="traceControl" hidden>
+            <summary>Advanced diagnostics</summary>
+            <label class="toggle-row">
+              <span>
+                <strong>Retrieval trace</strong>
+                <small>Include safe pipeline details</small>
+              </span>
+              <input id="traceToggle" type="checkbox">
+              <span class="toggle" aria-hidden="true"></span>
+            </label>
+          </details>
+        </div>
+      </details>
+
+      <nav class="history-panel" aria-labelledby="historyHeading">
+        <div class="section-heading history-heading">
+          <div class="section-title">
+            <svg class="section-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 14a4 4 0 0 1-4 4H9l-5 3 1.5-4.5A6 6 0 0 1 4 12V9a5 5 0 0 1 5-5h7a4 4 0 0 1 4 4z"></path>
+            </svg>
+            <h2 id="historyHeading">Recent chats</h2>
+          </div>
+          <button class="text-button" id="clearHistoryButton" type="button">Clear</button>
+        </div>
+        <label class="history-search" for="historySearch">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6"></circle>
+            <path d="m16 16 4 4"></path>
+          </svg>
+          <span class="sr-only">Search recent chats</span>
+          <input id="historySearch" type="search" placeholder="Search conversations" autocomplete="off">
+        </label>
+        <ol class="history-list" id="historyList"></ol>
+      </nav>
+
+      <div class="sidebar-footer">
+        <p>Answers use indexed documents, not live market data.</p>
+      </div>
+    </aside>
+
+    <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="Close sidebar" tabindex="-1"></button>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div class="topbar-leading">
+          <button class="icon-button mobile-menu" id="mobileMenuButton" type="button" aria-label="Open sidebar" aria-controls="sidebar" aria-expanded="false">
+            <span aria-hidden="true">&#9776;</span>
+          </button>
+          <div class="workspace-heading">
+            <div class="eyebrow">
+              <span class="status-dot" id="healthDot"></span>
+              <span id="healthText">Connecting</span>
+            </div>
+            <h1 id="conversationTitle">Financial research workspace</h1>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="active-scope" id="activeScope" aria-live="polite">
+            <span class="scope-dot" aria-hidden="true"></span>
+            <span>Scope not established</span>
+          </div>
+          <div class="theme-picker" id="themePicker">
+            <button class="icon-button theme-button" id="themeButton" type="button" aria-label="Choose color theme" aria-controls="themeMenu" aria-expanded="false">
+              <span id="themeIcon" aria-hidden="true">&#9788;</span>
+            </button>
+            <div class="theme-menu" id="themeMenu" role="menu" aria-label="Color theme" hidden>
+              <button type="button" role="menuitem" data-theme-choice="system"><span>System</span><span class="theme-check" aria-hidden="true"></span></button>
+              <button type="button" role="menuitem" data-theme-choice="light"><span>Light</span><span class="theme-check" aria-hidden="true"></span></button>
+              <button type="button" role="menuitem" data-theme-choice="dark"><span>Dark</span><span class="theme-check" aria-hidden="true"></span></button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <section class="chat-scroll" id="chatScroll" aria-label="FinRAG conversation">
+        <div class="welcome" id="welcomePanel">
+          <div class="welcome-orb" aria-hidden="true"><span>F</span></div>
+          <p class="welcome-kicker">Document-grounded financial research</p>
+          <h2>What can I help you research?</h2>
+          <p class="welcome-copy">Ask about a filing or earnings call. FinRAG keeps the answer tied to the selected company, period, and evidence.</p>
+          <div class="suggestion-label">Suggested questions</div>
+          <div class="prompt-grid" id="promptGrid">
+            <button type="button" data-prompt="Summarize Microsoft's 2024 risk factors from its 10-K.">
+              <span class="prompt-icon" aria-hidden="true">01</span>
+              <span><strong>Risk overview</strong><small>Summarize material filing risks</small></span>
+              <span class="prompt-arrow" aria-hidden="true">&rarr;</span>
+            </button>
+            <button type="button" data-prompt="What did Tesla management say about automotive margins in its 2025 transcript?">
+              <span class="prompt-icon" aria-hidden="true">02</span>
+              <span><strong>Management commentary</strong><small>Review an earnings call</small></span>
+              <span class="prompt-arrow" aria-hidden="true">&rarr;</span>
+            </button>
+            <button type="button" data-prompt="Compare MSFT 2024 and 2025 revenue from the 10-Ks in a table.">
+              <span class="prompt-icon" aria-hidden="true">03</span>
+              <span><strong>Period comparison</strong><small>Preserve reported values and units</small></span>
+              <span class="prompt-arrow" aria-hidden="true">&rarr;</span>
+            </button>
+          </div>
+        </div>
+        <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+      </section>
+
+      <div class="stage-bar" id="stageBar" role="status" aria-live="polite" hidden>
+        <span class="stage-spinner" aria-hidden="true"></span>
+        <span id="stageText">Preparing analysis...</span>
+        <button class="text-button danger-text" id="stopButton" type="button">Stop</button>
+      </div>
+      <div class="retry-bar" id="retryBar" hidden>
+        <span>The last request did not complete.</span>
+        <button class="text-button" id="retryButton" type="button">Retry</button>
+      </div>
+
+      <footer class="composer-wrap">
+        <form class="composer" id="composerForm">
+          <label class="sr-only" for="questionInput">Ask a financial question</label>
+          <textarea id="questionInput" rows="1" maxlength="4000" placeholder="Ask about a filing, metric, risk, or earnings call..." autocomplete="off"></textarea>
+          <div class="composer-actions">
+            <span class="keyboard-hint" aria-hidden="true">Enter</span>
+            <button class="send-button" id="sendButton" type="submit" aria-label="Send question" disabled>
+              <span aria-hidden="true">&uarr;</span>
+            </button>
+          </div>
+        </form>
+        <p class="composer-note">Shift+Enter for a new line. Verify important financial decisions against the cited source.</p>
+      </footer>
+    </main>
+  </div>
+
+  <dialog class="evidence-dialog" id="evidenceDialog" aria-labelledby="evidenceTitle">
+    <div class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <p class="dialog-kicker">Grounding record</p>
+          <h2 id="evidenceTitle">Evidence sources</h2>
+        </div>
+        <button class="icon-button" id="closeEvidenceButton" type="button" aria-label="Close evidence">&times;</button>
+      </header>
+      <div class="evidence-list" id="evidenceList"></div>
+    </div>
+  </dialog>
+
+  <dialog class="trace-dialog" id="traceDialog" aria-labelledby="traceTitle">
+    <div class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <p class="dialog-kicker">Safe diagnostics</p>
+          <h2 id="traceTitle">Retrieval trace</h2>
+        </div>
+        <button class="icon-button" id="closeTraceButton" type="button" aria-label="Close retrieval trace">&times;</button>
+      </header>
+      <pre class="trace-output" id="traceOutput"></pre>
+    </div>
+  </dialog>
+
+  <div class="toast-region" id="toastRegion" role="region" aria-label="Notifications" aria-live="polite"></div>
+</body>
+</html>
