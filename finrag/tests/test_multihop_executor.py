@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import json
 from decimal import Decimal
 
 from src.financial.models import FactValidationResult, ValidatedFinancialFact, ValueType
+from src.financial.fact_pipeline import FinancialFactPipeline
 from src.orchestration.executor import MultiHopExecutor, _focused_numeric_sources, _select_fact
 from src.orchestration.models import (
     EvidenceGroup,
@@ -13,6 +15,7 @@ from src.orchestration.models import (
     PlannedCalculation,
 )
 from src.schemas import RetrievalBundle, Scope
+from src.retrieval.structured_lookup import StructuredDocumentLookup
 from src.tools.document_search import DocumentSearchResult
 
 
@@ -53,6 +56,45 @@ class FakeDocumentSearch:
             ),
         )
         return DocumentSearchResult(request.query, request.purpose, bundle)
+
+
+class EmptyExtractor:
+    def extract(self, *, question, sources):
+        del question, sources
+        return ()
+
+
+def test_indexed_statement_recovers_fact_missed_by_ranked_search(tmp_path) -> None:
+    (tmp_path / "statement.json").write_text(json.dumps({
+        "page_content": (
+            "## Consolidated Statements of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2024</th><th>2023</th></tr>"
+            "<tr><td>Automotive sales</td><td>$72,480</td><td>$78,509</td></tr>"
+            "<tr><td>Total revenues</td><td>97,690</td><td>96,773</td></tr></table>"
+        ),
+        "metadata": {"ticker": "TSLA", "fiscal_year": "2024", "doc_type": "10K",
+                     "item": "Item 8", "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+                     "source": "TSLA_2024_10K.pdf", "pdf_page_start": 50},
+    }), encoding="utf-8")
+    requirement = EvidenceRequirement(
+        requirement_id="revenue", question="What is Tesla revenue in 2024?",
+        evidence_type="numeric", document_type="10K",
+        groups=(EvidenceGroup(ticker="TSLA", fiscal_year="2024"),),
+    )
+    executor = MultiHopExecutor(
+        document_search=FakeDocumentSearch(),
+        fact_pipeline=FinancialFactPipeline(extractor=EmptyExtractor()),
+        statement_lookup=StructuredDocumentLookup(tmp_path),
+    )
+
+    result = executor.execute(
+        MultiHopPlan(original_question=requirement.question,
+                     requirements=(requirement,), calculations=()),
+        permitted_scope=Scope(("TSLA",), ("2024",), "10K"),
+    )
+
+    assert result.complete
+    assert any(fact.raw_value == "97,690" for fact in result.facts)
 
 
 class MissingInitialGroupSearch(FakeDocumentSearch):

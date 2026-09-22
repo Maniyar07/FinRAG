@@ -500,6 +500,11 @@ matching the requested subject, or derives the item list from metadata. The
 matching full structure is displayed with source links. When no matching full
 structure is available, the question continues through hybrid search, optional
 reranking, compression, and generation.
+For a single 10-K filing, reported figures in statement rows are read from the
+indexed row and year column and supplied to generation with their source. A
+generated amount that conflicts with these verified cells is retried and then
+withheld if still wrong. Multi-hop calculations use the same indexed rows as a
+fallback when ranked search misses a required statement parent.
 LangGraph is not needed for this bounded routing; adding it would not change the
 retrieved evidence or repair a truncated source table.
 

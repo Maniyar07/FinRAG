@@ -424,10 +424,21 @@ def _sanitize_trace(trace: object) -> dict[str, Any]:
     if isinstance(inherited, list):
         sanitized["inherited_fields"] = [str(item)[:80] for item in inherited[:8]]
 
+    multihop = trace.get("multihop")
+    if isinstance(multihop, dict):
+        sanitized["multihop"] = {
+            "enabled": bool(multihop.get("enabled")),
+            "selected": bool(multihop.get("selected")),
+        }
+
     retrieval = trace.get("retrieval")
     if isinstance(retrieval, dict):
         retrieval_view: dict[str, Any] = {
+            "mode": _clean_text(retrieval.get("mode"), max_length=40),
             "candidate_count": max(0, int(retrieval.get("candidate_count", 0))),
+            "verified_statement_rows": max(
+                0, int(retrieval.get("verified_statement_rows", 0))
+            ),
             "source_ids": [str(item)[:32] for item in retrieval.get("source_ids", [])[:24]],
             "source_groups": [
                 [str(part)[:64] for part in group[:3]]

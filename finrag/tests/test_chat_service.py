@@ -5,11 +5,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from src.app.chat_service import ChatService
+from src.generation.answer_guardrails import UNVERIFIABLE_RESPONSE
 from src.generation.narrative_quotes import VerifiedQuote
 from src.financial.models import ValueType
 from src.orchestration.models import EvidenceType
 from src.retrieval.semantic_query_parser import SemanticQueryResult
-from src.retrieval.structured_lookup import DirectAnswer
+from src.retrieval.structured_lookup import DirectAnswer, VerifiedTableRow
 from src.schemas import Decision, RetrievalBundle, Scope
 from src.tools.document_search import DocumentSearchTool
 
@@ -91,6 +92,41 @@ def _service(*, semantic_parser=None) -> ChatService:
 
 
 class ChatServiceOrchestrationTests(unittest.TestCase):
+    def test_generation_validation_failure_has_distinct_decision(self) -> None:
+        service = _service()
+        service.generator.generate_with_trace = lambda *_, **__: SimpleNamespace(
+            answer=UNVERIFIABLE_RESPONSE,
+            attempts=3,
+            validation_reason="generation_validation_failed:missing_source_ids",
+            raw_output_previews=(),
+        )
+
+        result = service.ask("Summarize Microsoft's 2025 10-K risk factors.")
+
+        self.assertEqual(result.decision, Decision.VALIDATION_FAILED)
+
+    def test_indexed_statement_row_reaches_ordinary_generation(self) -> None:
+        service = _service()
+        row_source = {
+            "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
+            "fiscal_year": "2025", "doc_type": "10K",
+            "source": "TSLA_2025_10K.pdf", "section": "Item 8",
+            "evidence_text": "Total revenues 94,827",
+        }
+        row = VerifiedTableRow("Total revenues", "2025", "94,827", "millions", row_source)
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: (row,),
+        )
+
+        result = service.ask("What was Tesla revenue in its 2025 10-K?")
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(result.trace["retrieval"]["verified_statement_rows"], 1)
+        _, bundle, kwargs = service.generator.calls[0]
+        self.assertEqual(kwargs["verified_rows"][0].source["id"], "S2")
+        self.assertEqual(len(bundle.sources), 2)
+
     def test_exact_table_lookup_bypasses_ranked_search_and_generation(self) -> None:
         service = _service()
         direct = DirectAnswer(
@@ -104,6 +140,7 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(result.decision, Decision.ANSWERED)
         self.assertEqual(result.trace["retrieval"]["mode"], "exact_table")
+        self.assertEqual(result.trace["multihop"], {"enabled": False, "selected": False})
         self.assertEqual(service.retriever.calls, [])
         self.assertEqual(service.generator.calls, [])
 
@@ -134,8 +171,45 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
             SimpleNamespace(facts=facts, calculations=(calculation,))
         )
 
-        self.assertIn("$245,122 million", answer)
+        self.assertIn("USD 245,122 million", answer)
         self.assertIn("USD 281,724 million", answer)
+        self.assertIn("**14.93%**", answer)
+        self.assertNotIn("MSFT revenue change:", answer)
+
+    def test_calculation_summary_omits_unrequested_winner(self) -> None:
+        facts = (
+            SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
+            SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
+            SimpleNamespace(fact_id="F3", ticker="BBB", metric="Revenue", period="2024", raw_value="100", source_id="S3"),
+            SimpleNamespace(fact_id="F4", ticker="BBB", metric="Revenue", period="2025", raw_value="90", source_id="S4"),
+        )
+        calculations = tuple(
+            SimpleNamespace(
+                label="Calculate the percentage change in revenue for " + ticker,
+                result=SimpleNamespace(
+                    input_fact_ids=ids, result=Decimal(result),
+                    result_unit="percent", currency=None, scale=None,
+                    source_ids=sources,
+                    operation=SimpleNamespace(value="percentage_change"),
+                ),
+            )
+            for ticker, ids, result, sources in (
+                ("AAA", ("F1", "F2"), "20", ("S1", "S2")),
+                ("BBB", ("F3", "F4"), "-10", ("S3", "S4")),
+            )
+        )
+        execution = SimpleNamespace(facts=facts, calculations=calculations)
+
+        answer = ChatService._verified_calculation_text(
+            execution, "Calculate each company's revenue percentage change."
+        )
+
+        self.assertIn("**AAA revenue:**", answer)
+        self.assertIn("**BBB revenue:**", answer)
+        self.assertIn("**20%**", answer)
+        self.assertIn("**-10%**", answer)
+        self.assertNotIn("Calculate the percentage change", answer)
+        self.assertNotIn("grew more", answer)
 
     def test_calculation_and_exact_quote_are_composed_without_freeform_generation(self) -> None:
         service = _service()
@@ -219,9 +293,9 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
             ),
         )
         answer = ChatService._verified_calculation_partial(execution)
-        self.assertIn("20 percent", answer)
+        self.assertIn("20%", answer)
         self.assertIn("2024: 100", answer)
-        self.assertIn("Year Ended December 31, 2025: 120", answer)
+        self.assertIn("2025: 120", answer)
         self.assertIn("could not validate", answer)
 
     def test_compound_comparison_uses_enabled_multihop_path(self) -> None:

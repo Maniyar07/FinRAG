@@ -24,7 +24,7 @@ from src.schemas import Scope
 
 
 COMPOUND_QUESTION_RE = re.compile(
-    r"\b(?:and|also)\s+(?:explain|identify|calculate|summarize|discuss|"
+    r"\b(?:and|also|then)\s+(?:explain|identify|calculate|summarize|discuss|"
     r"compare|why|how|what)\b|[;]",
     re.IGNORECASE,
 )

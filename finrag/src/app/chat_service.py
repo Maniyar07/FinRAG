@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
@@ -36,7 +37,7 @@ from src.retrieval.semantic_query_parser import (
     should_use_semantic_fallback,
 )
 from src.retrieval.scope_policy import resolve_scope
-from src.retrieval.structured_lookup import StructuredDocumentLookup
+from src.retrieval.structured_lookup import StructuredDocumentLookup, VerifiedTableRow
 from src.retrieval.vector_store import FinancialVectorStore
 from src.schemas import (
     ChatResult,
@@ -44,6 +45,7 @@ from src.schemas import (
     PendingClarification,
     Scope,
     ScopeResolution,
+    RetrievalBundle,
 )
 from src.retrieval.reranker import build_cohere_reranker_from_environment
 from src.tools.document_search import DocumentSearchRequest, DocumentSearchTool
@@ -100,7 +102,10 @@ class ChatService:
                 MultiHopPlanner() if self.multihop_enabled else None
             )
             self.multihop_executor = (
-                MultiHopExecutor(document_search=self.document_search_tool)
+                MultiHopExecutor(
+                    document_search=self.document_search_tool,
+                    statement_lookup=self.structured_lookup,
+                )
                 if self.multihop_enabled
                 else None
             )
@@ -194,12 +199,52 @@ class ChatService:
         }
 
     @staticmethod
-    def _verified_calculation_text(execution: MultiHopExecutionResult) -> str | None:
+    def _with_statement_rows(
+        bundle: RetrievalBundle, rows: tuple[VerifiedTableRow, ...]
+    ) -> tuple[RetrievalBundle, tuple[VerifiedTableRow, ...]]:
+        """Make verified indexed rows visible to generation with valid citations."""
+        if not rows:
+            return bundle, rows
+        sources = list(bundle.sources)
+        context = bundle.context
+        next_id = max(
+            (int(str(source.get("id", "S0"))[1:]) for source in sources
+             if re.fullmatch(r"S\d+", str(source.get("id", "")))),
+            default=0,
+        ) + 1
+        source_ids: dict[str, str] = {}
+        verified = []
+        for row in rows:
+            parent_id = str(row.source.get("parent_id"))
+            source_id = source_ids.get(parent_id)
+            if source_id is None:
+                source_id = f"S{next_id}"
+                next_id += 1
+                source_ids[parent_id] = source_id
+                source = {**row.source, "id": source_id}
+                sources.append(source)
+                context += (
+                    f"\n\n---\n\n[SOURCE {source_id} | TICKER: {source.get('ticker')} "
+                    f"| FISCAL YEAR: {source.get('fiscal_year')} | TYPE: 10K "
+                    f"| SECTION: {source.get('section')}]\n"
+                    f"{source['evidence_text']}"
+                )
+            verified.append(replace(row, source={**row.source, "id": source_id}))
+        return (
+            RetrievalBundle(context, sources, bundle.scope, bundle.candidate_count,
+                            bundle.covered_groups),
+            tuple(verified),
+        )
+
+    @staticmethod
+    def _verified_calculation_text(
+        execution: MultiHopExecutionResult, question: str = ""
+    ) -> str | None:
         """Format only validated facts and deterministic calculations."""
         if not execution.calculations:
             return None
         facts = {fact.fact_id: fact for fact in execution.facts}
-        lines = ["Verified figures and calculations from the retrieved filings:"]
+        lines = ["### Calculated results"]
         for item in execution.calculations:
             result = item.result
             inputs = [facts.get(fact_id) for fact_id in result.input_fact_ids]
@@ -207,23 +252,18 @@ class ChatService:
                 return None
             input_labels: list[str] = []
             for fact in inputs:
-                period = fact.period
-                if not re.search(r"\b(?:19|20)\d{2}\b", period):
-                    column = str(getattr(fact, "column_label", "") or "")
-                    year = re.search(r"\b(?:19|20)\d{2}\b", column)
-                    if year:
-                        period = f"{period} {year.group(0)}".strip()
-                raw_value = str(fact.raw_value)
+                period = str(getattr(fact, "column_label", "") or fact.period)
+                year = re.search(r"\b(?:19|20)\d{2}\b", period)
+                period = year.group(0) if year else period.strip()
+                raw_value = str(fact.raw_value).strip()
                 if getattr(fact, "value_type", None) == ValueType.CURRENCY:
                     currency = str(getattr(fact, "currency", "") or "")
                     scale = str(getattr(fact, "scale", "") or "")
-                    if currency and not re.search(r"[$€£¥]|\b(?:USD|EUR|GBP|JPY)\b", raw_value):
-                        raw_value = f"{currency} {raw_value}"
-                    if scale and not re.search(r"\b(?:thousands?|millions?|billions?)\b", raw_value, re.IGNORECASE):
-                        raw_value = f"{raw_value} {scale.rstrip('s')}"
-                input_labels.append(
-                    f"{period}: {raw_value} [{fact.source_id}]"
-                )
+                    raw_value = re.sub(r"^(?:[$]|USD|EUR|GBP|JPY)\s*", "", raw_value, flags=re.IGNORECASE)
+                    raw_value = " ".join(
+                        part for part in (currency, raw_value, scale.rstrip("s")) if part
+                    )
+                input_labels.append(f"{period}: {raw_value} [{fact.source_id}]")
             inputs_text = " → ".join(input_labels)
             value = f"{result.result:,.2f}".rstrip("0").rstrip(".")
             unit = " ".join(
@@ -236,35 +276,44 @@ class ChatService:
                 if part
             ).replace("percentage_points", "percentage points")
             citations = "".join(f"[{source_id}]" for source_id in result.source_ids)
-            lines.append(
-                f"- {item.label}: {inputs_text}; {result.operation.value.replace('_', ' ')} "
-                f"= {value} {unit} {citations}."
+            first_fact = inputs[0]
+            metric = str(
+                getattr(first_fact, "metric", "")
+                or getattr(first_fact, "row_label", "")
+                or item.label
             )
-        if len(execution.calculations) == 2:
+            ticker = str(getattr(first_fact, "ticker", "") or "")
+            subject = metric.lower()
+            if ticker and not subject.startswith(ticker.lower() + " "):
+                subject = f"{ticker} {subject}"
+            operation = result.operation.value.replace("_", " ")
+            formatted_result = (
+                f"{value}%" if result.result_unit == "percent"
+                else f"{value} {unit}".strip()
+            )
+            lines.append(
+                f"- **{subject}:** {inputs_text}. {operation.capitalize()}: "
+                f"**{formatted_result}** {citations}."
+            )
+        if len(execution.calculations) == 2 and re.search(
+            r"\bwhich\s+(?:company\s+)?(?:grew|increased|had\s+(?:the\s+)?(?:higher|larger))\b",
+            question, re.IGNORECASE,
+        ):
             first, second = execution.calculations
             if (
                 first.result.operation == second.result.operation
                 and first.result.result_unit == second.result.result_unit
             ):
-                magnitude = first.result.result_unit in {
-                    "percentage_points", "basis_points"
-                }
                 winner = max(
                     (first, second),
-                    key=lambda item: (
-                        abs(item.result.result)
-                        if magnitude
-                        else item.result.result
-                    ),
+                    key=lambda item: item.result.result,
                 )
                 first_fact = facts[winner.result.input_fact_ids[0]]
                 citations = "".join(
                     f"[{source_id}]" for source_id in winner.result.source_ids
                 )
-                qualifier = " in magnitude" if magnitude else ""
                 lines.append(
-                    f"{first_fact.ticker} had the larger calculated change{qualifier} "
-                    f"{citations}."
+                    f"**{first_fact.ticker} grew more.** {citations}"
                 )
         return "\n\n".join(lines)
 
@@ -357,7 +406,7 @@ class ChatService:
             self._record({**trace, "decision": result.decision.value})
             return result
 
-        numeric_text = self._verified_calculation_text(execution)
+        numeric_text = self._verified_calculation_text(execution, question)
         if numeric_text is not None:
             narrative_requirements = [
                 item
@@ -469,11 +518,13 @@ class ChatService:
             )
 
         decision = (
-            Decision.INSUFFICIENT_EVIDENCE
-            if answer in {INSUFFICIENT_EVIDENCE_RESPONSE, UNVERIFIABLE_RESPONSE}
+            Decision.VALIDATION_FAILED
+            if answer == UNVERIFIABLE_RESPONSE
+            or generation.validation_reason.startswith("generation_validation_failed:")
+            else Decision.INSUFFICIENT_EVIDENCE if answer == INSUFFICIENT_EVIDENCE_RESPONSE
             else Decision.ANSWERED
         )
-        if decision == Decision.INSUFFICIENT_EVIDENCE:
+        if decision != Decision.ANSWERED:
             partial = self._verified_calculation_partial(execution)
             if partial is not None:
                 answer = partial
@@ -686,6 +737,10 @@ class ChatService:
             self._record({**trace, "decision": result.decision.value})
             return result
 
+        trace["multihop"] = {
+            "enabled": bool(getattr(self, "multihop_enabled", False)),
+            "selected": False,
+        }
         lookup = getattr(self, "structured_lookup", None)
         if lookup is not None:
             direct = lookup.answer(
@@ -720,10 +775,7 @@ class ChatService:
             and not understanding.wants_complete_table
             and should_use_multihop(effective_question, resolution.scope)
         )
-        trace["multihop"] = {
-            "enabled": bool(getattr(self, "multihop_enabled", False)),
-            "selected": use_multihop,
-        }
+        trace["multihop"]["selected"] = use_multihop
         if use_multihop:
             return self._run_multihop(
                 question=effective_question,
@@ -745,6 +797,14 @@ class ChatService:
                 permitted_scope=resolution.scope,
             )
             bundle = search_result.bundle
+            verified_rows: tuple[VerifiedTableRow, ...] = ()
+            if (
+                lookup is not None
+                and hasattr(lookup, "statement_rows")
+                and not understanding.wants_table
+            ):
+                verified_rows = lookup.statement_rows(effective_question, resolution.scope)
+                bundle, verified_rows = self._with_statement_rows(bundle, verified_rows)
         except Exception as error:
             trace["error_type"] = type(error).__name__
             self._record({**trace, "decision": Decision.ERROR.value})
@@ -775,6 +835,7 @@ class ChatService:
                 source.get("rerank_score") is not None for source in bundle.sources
             ),
             "sources": source_traces,
+            "verified_statement_rows": len(verified_rows),
         }
         if not bundle.context or not bundle.sources:
             result = ChatResult(
@@ -807,6 +868,7 @@ class ChatService:
                 history=history,
                 wants_table=understanding.wants_table,
                 wants_complete_table=understanding.wants_complete_table,
+                verified_rows=verified_rows,
             )
             answer = generation.answer
             trace["generation"] = {
@@ -827,8 +889,8 @@ class ChatService:
                 trace,
             )
         decision = (
-            Decision.INSUFFICIENT_EVIDENCE
-            if answer in {INSUFFICIENT_EVIDENCE_RESPONSE, UNVERIFIABLE_RESPONSE}
+            Decision.VALIDATION_FAILED if answer == UNVERIFIABLE_RESPONSE
+            else Decision.INSUFFICIENT_EVIDENCE if answer == INSUFFICIENT_EVIDENCE_RESPONSE
             else Decision.ANSWERED
         )
         result = ChatResult(

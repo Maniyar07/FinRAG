@@ -129,8 +129,15 @@ class FakeChatService:
                 "requested_groups": [],
             },
             "inherited_fields": ["company", "year"],
+            "multihop": {
+                "enabled": True,
+                "selected": True,
+                "plan": {"private_prompt": "never-return-this"},
+            },
             "retrieval": {
+                "mode": "multi_hop",
                 "candidate_count": 4,
+                "verified_statement_rows": 2,
                 "source_ids": ["S1"],
                 "source_groups": [["MSFT", "2024", "10K"]],
                 "reranker_applied": True,
@@ -271,6 +278,11 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertNotIn("retrieval_query", body["trace"])
         self.assertNotIn("raw_output_previews", body["trace"]["generation"])
         self.assertNotIn("api_key", body["trace"]["reranker"])
+        self.assertEqual(
+            body["trace"]["multihop"], {"enabled": True, "selected": True}
+        )
+        self.assertEqual(body["trace"]["retrieval"]["mode"], "multi_hop")
+        self.assertEqual(body["trace"]["retrieval"]["verified_statement_rows"], 2)
 
         call = FakeChatService.instances[0].calls[0]
         self.assertEqual(call["question"], request_body()["question"])

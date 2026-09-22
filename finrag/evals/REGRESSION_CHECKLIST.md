@@ -14,6 +14,11 @@ correct company/year/document, and cites supporting evidence. A supported
 answer should not display raw HTML fragments or stop mid-table. An unavailable
 source or live-data request should be declined clearly.
 
+For the bundled `phase1-v2` index, Tesla's 2025 10-K statement reports revenue
+of $94,827 million and net income of $3,855 million. The revenue comparison
+should use MSFT $245,122 million (2024) and $281,724 million (2025), and TSLA
+$97,690 million (2024) and $94,827 million (2025).
+
 | # | Question | What to check | Result |
 |---|---|---|---|
 | 1 | Show the complete balance sheet table from Microsoft's 2025 10-K. | Full matching table, all rows and year columns, source citation. | ☐ Pass ☐ Fail |
@@ -25,9 +30,9 @@ source or live-data request should be declined clearly.
 | 7 | Which of those risks could affect vehicle sales? | Ask immediately after #6; follow-up uses the same scope. | ☐ Pass ☐ Fail |
 | 8 | Compare Microsoft's 2024 and 2025 revenue using its 10-K filings. | Both years and their sources are clear. | ☐ Pass ☐ Fail |
 | 9 | Compare Microsoft's and Tesla's 2025 revenue. Cite each filing. | Both companies covered; citations do not cross companies. | ☐ Pass ☐ Fail |
-| 10 | Calculate each company's revenue percentage change from 2024 to 2025. Which grew more? | Correct inputs, arithmetic, units, and conclusion. | ☐ Pass ☐ Fail |
+| 10 | Using MSFT and TSLA 2024 and 2025 10-Ks, calculate each company's revenue percentage change. Which grew more? | Both companies, correct inputs, arithmetic, units, and conclusion. | ☐ Pass ☐ Fail |
 | 11 | Compare how Microsoft and Tesla discuss competition risk in their 2024 10-Ks. | Both companies covered with separate evidence. | ☐ Pass ☐ Fail |
-| 12 | From Tesla's 2025 10-K, give revenue and net income, then summarize one risk factor. | All three requested parts answered and cited. | ☐ Pass ☐ Fail |
+| 12 | From Tesla's 2025 10-K, give revenue and net income, then summarize one risk factor. | $94,827 million revenue, $3,855 million net income, and a cited risk factor. | ☐ Pass ☐ Fail |
 | 13 | What did Microsoft management say about Azure growth in its 2025 Q4 earnings-call transcript? | Uses the transcript rather than a 10-K. | ☐ Pass ☐ Fail |
 | 14 | What is Microsoft's stock price right now? | Declines live-data request; does not invent a price. | ☐ Pass ☐ Fail |
 | 15 | What does Apple's 2025 10-K say about revenue? | Reports that Apple is unavailable in the selected index. | ☐ Pass ☐ Fail |

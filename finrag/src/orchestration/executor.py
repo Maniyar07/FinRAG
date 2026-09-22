@@ -19,6 +19,7 @@ from src.orchestration.models import (
     RequirementResult,
 )
 from src.schemas import RetrievalBundle, Scope
+from src.retrieval.structured_lookup import StructuredDocumentLookup
 from src.tools.document_search import (
     DocumentSearchPurpose,
     DocumentSearchRequest,
@@ -579,10 +580,12 @@ class MultiHopExecutor:
         document_search: DocumentSearchTool,
         fact_pipeline: FinancialFactPipeline | None = None,
         calculator: FinancialCalculatorTool | None = None,
+        statement_lookup: StructuredDocumentLookup | None = None,
     ) -> None:
         self.document_search = document_search
         self.fact_pipeline = fact_pipeline or FinancialFactPipeline()
         self.calculator = calculator or FinancialCalculatorTool()
+        self.statement_lookup = statement_lookup
 
     def execute(
         self,
@@ -905,6 +908,50 @@ class MultiHopExecutor:
                             else:
                                 off_metric_facts.append(fact)
                         rejections.extend(exact_result.rejected_facts)
+                # Search ranking can miss an indexed statement parent. Read
+                # its requested row/year directly before declaring a fact absent.
+                if self.statement_lookup is not None:
+                    for group in requirement.groups:
+                        if group.key in fact_group_keys():
+                            continue
+                        recovery_scope = Scope(
+                            tickers=(group.ticker,), years=(group.fiscal_year,),
+                            doc_type=requirement.document_type,
+                            requested_groups=(group.key,),
+                        )
+                        for row in self.statement_lookup.statement_rows(
+                            requirement.question, recovery_scope
+                        ):
+                            indexed_bundle = RetrievalBundle(
+                                row.source["evidence_text"], [row.source],
+                                recovery_scope, 0,
+                            )
+                            indexed_source = merger.add(indexed_bundle)[0]
+                            source_id = str(indexed_source["id"])
+                            source_map[source_id] = indexed_source
+                            if not any(source["id"] == source_id for source in sources):
+                                sources.append(indexed_source)
+                            role = {
+                                "requirement_id": requirement.requirement_id,
+                                "evidence_type": requirement.evidence_type.value,
+                                "document_type": requirement.document_type,
+                            }
+                            roles = list(indexed_source.get("evidence_requirements") or [])
+                            if role not in roles:
+                                roles.append(role)
+                            indexed_source["evidence_requirements"] = roles
+                            recovered = self.fact_pipeline.recover_exact_table_row(
+                                metric_hint=row.label,
+                                period_year=group.fiscal_year,
+                                sources=[indexed_source],
+                                permitted_scope=recovery_scope,
+                            )
+                            for fact in recovered.valid_facts:
+                                if matches_planned_reference(fact):
+                                    valid_map[fact.fact_id] = fact
+                                else:
+                                    off_metric_facts.append(fact)
+                            rejections.extend(recovered.rejected_facts)
                 recovered_groups.extend(
                     list(group.key) for group in initial_missing
                     if group.key in fact_group_keys()

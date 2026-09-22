@@ -114,6 +114,30 @@ def test_income_statement_matches_operations_title_without_other_income_table(tm
     assert "Other comprehensive income" not in result.answer
 
 
+def test_requested_statement_rows_use_matching_year_and_metric(tmp_path) -> None:
+    _parent(
+        tmp_path, "operations", ticker="TSLA", year="2025", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Consolidated Statements of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2025</th><th>2024</th></tr>"
+            "<tr><td>Total revenues</td><td>94,827</td><td>97,690</td></tr>"
+            "<tr><td>Net income</td><td>3,855</td><td>7,153</td></tr>"
+            "<tr><td>Net income attributable to common stockholders</td>"
+            "<td>3,794</td><td>7,091</td></tr></table>"
+        ),
+    )
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "Give revenue and net income, then summarize a risk factor",
+        Scope(tickers=("TSLA",), years=("2025",), doc_type="10K"),
+    )
+
+    assert {(row.label, row.value) for row in rows} == {
+        ("Total revenues", "94,827"), ("Net income", "3,855")
+    }
+    assert all(row.year == "2025" and row.scale == "millions" for row in rows)
+
+
 def test_all_items_come_from_document_metadata_in_order(tmp_path) -> None:
     _parent(
         tmp_path, "late", body="## ITEM 10. DIRECTORS", item="Item 10",

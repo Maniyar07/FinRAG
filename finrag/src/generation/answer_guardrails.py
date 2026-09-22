@@ -20,7 +20,7 @@ INSUFFICIENT_EVIDENCE_RESPONSE = (
     "I cannot find sufficient evidence in the retrieved financial documents to answer this question."
 )
 UNVERIFIABLE_RESPONSE = (
-    "Relevant evidence was retrieved, but answer format or citation validation failed. "
+    "Relevant evidence was retrieved, but the generated answer could not be verified. "
     "Please retry this request."
 )
 

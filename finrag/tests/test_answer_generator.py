@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.generation.answer_generator import AnswerGenerator
+from src.retrieval.structured_lookup import VerifiedTableRow
 from src.schemas import RetrievalBundle, Scope
 
 
@@ -10,9 +11,10 @@ class FakeChain:
     def __init__(self, outputs: list[dict | Exception]):
         self.outputs = list(outputs)
         self.calls = 0
+        self.inputs: list[dict] = []
 
     def invoke(self, values: dict) -> dict:
-        del values
+        self.inputs.append(values)
         output = self.outputs[self.calls]
         self.calls += 1
         if isinstance(output, Exception):
@@ -48,6 +50,51 @@ def bundle() -> RetrievalBundle:
 
 
 class AnswerGeneratorTests(unittest.TestCase):
+    def test_missing_inline_citations_repair_previous_draft_on_third_attempt(self) -> None:
+        draft = "### Cloud growth\n\n- Management discussed capacity growth.\n- Demand grew."
+        chain = FakeChain([
+            {"answer": draft, "source_ids": ["S1"]},
+            {"answer": draft, "source_ids": ["S1"]},
+            {"answer": "Management discussed capacity growth [S1].", "source_ids": ["S1"]},
+        ])
+
+        result = AnswerGenerator(chain=chain).generate_with_trace(
+            "What did management say about cloud growth?", bundle()
+        )
+
+        self.assertEqual(result.attempts, 3)
+        self.assertEqual(result.validation_reason, "valid_inline_citations")
+        self.assertIn("Repair this previous draft", chain.inputs[1]["generation_instruction"])
+        self.assertIn("capacity growth", chain.inputs[2]["generation_instruction"])
+
+    def test_verified_statement_rows_reject_plausible_wrong_figures(self) -> None:
+        revenue_source = {"id": "S1", "ticker": "TSLA", "fiscal_year": "2025",
+                          "doc_type": "10K", "evidence_text": "Total revenues 94,827"}
+        income_source = {"id": "S2", "ticker": "TSLA", "fiscal_year": "2025",
+                         "doc_type": "10K", "evidence_text": "Net income 3,855"}
+        rows = (
+            VerifiedTableRow("Total revenues", "2025", "94,827", "millions", revenue_source),
+            VerifiedTableRow("Net income", "2025", "3,855", "millions", income_source),
+        )
+        test_bundle = RetrievalBundle(
+            "[SOURCE S1] Total revenues 94,827\n\n[SOURCE S2] Net income 3,855",
+            [revenue_source, income_source], Scope(("TSLA",), ("2025",), "10K"), 2,
+        )
+        chain = FakeChain([
+            {"answer": "Revenue: $100,000 million [S1]. Net income: $10,000 million [S2].",
+             "source_ids": ["S1", "S2"]},
+            {"answer": "Revenue: $94,827 million [S1]. Net income: $3,855 million [S2].",
+             "source_ids": ["S1", "S2"]},
+        ])
+
+        result = AnswerGenerator(chain=chain).generate_with_trace(
+            "Give Tesla 2025 revenue and net income", test_bundle, verified_rows=rows
+        )
+
+        self.assertEqual(result.attempts, 2)
+        self.assertIn("94,827", result.answer)
+        self.assertNotIn("100,000", result.answer)
+
     def test_wrong_table_value_is_repaired_before_answering(self) -> None:
         evidence = (
             "<table><tr><th></th><th>2024</th><th>2023</th></tr>"
@@ -118,6 +165,18 @@ class AnswerGeneratorTests(unittest.TestCase):
 
         self.assertEqual(result.attempts, 2)
         self.assertEqual(result.validation_reason, "valid_inline_citations")
+
+    def test_long_single_paragraph_accepts_declared_source_id(self) -> None:
+        narrative = "The filing describes competitive pressure in its market. " * 10
+        chain = FakeChain([{"answer": narrative, "source_ids": ["S1"]}])
+
+        result = AnswerGenerator(chain=chain).generate_with_trace(
+            "Summarize the competition risk.", bundle()
+        )
+
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(result.validation_reason, "valid_structured_ids_appended")
+        self.assertIn("[S1]", result.answer)
 
     def test_transcript_commentary_rejects_company_10k_citation(self) -> None:
         sources = [
@@ -192,7 +251,7 @@ class AnswerGeneratorTests(unittest.TestCase):
         result = AnswerGenerator(chain=chain).generate_with_trace(
             "What did Microsoft management say about AI infrastructure?", bundle()
         )
-        self.assertIn("validation failed", result.answer)
+        self.assertIn("could not be verified", result.answer)
         self.assertNotIn("MSFT 2024 Transcript", result.answer)
         self.assertTrue(result.validation_reason.startswith("generation_validation_failed:"))
 

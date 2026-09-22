@@ -246,6 +246,11 @@ class MultiHopPlannerTests(unittest.TestCase):
         self.assertTrue(
             should_use_multihop("Compare their revenue and explain the difference.", comparison)
         )
+        self.assertTrue(
+            should_use_multihop(
+                "Give revenue and net income, then summarize one risk factor.", simple
+            )
+        )
         self.assertFalse(should_use_multihop("What was revenue?", simple))
         self.assertTrue(
             should_use_multihop("What was revenue; and why did it change?", simple)

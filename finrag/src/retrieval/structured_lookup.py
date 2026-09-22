@@ -36,6 +36,15 @@ class DirectAnswer:
     mode: str
 
 
+@dataclass(frozen=True)
+class VerifiedTableRow:
+    label: str
+    year: str
+    value: str
+    scale: str
+    source: dict
+
+
 class StructuredDocumentLookup:
     """Use stored parent records for exact tables and complete 10-K item lists."""
 
@@ -225,6 +234,69 @@ class StructuredDocumentLookup:
             lines.append(f"- {title} [{source_id}]")
             sources.append(self._source(source_id, parent_id, metadata, title))
         return DirectAnswer("\n".join(lines), sources, "document_items")
+
+    def statement_rows(self, question: str, scope: Scope) -> tuple[VerifiedTableRow, ...]:
+        """Find requested row/year cells in indexed 10-K statement tables."""
+        group = self._group(scope)
+        if group is None:
+            return ()
+        requested = self._terms(question) - self._terms(group[0])
+        chosen: dict[frozenset[str], VerifiedTableRow] = {}
+        ambiguous: set[frozenset[str]] = set()
+        for parent_id, body, metadata in self._documents(*group):
+            if str(metadata.get("item", "")).casefold() != "item 8":
+                continue
+            for table_match in HTML_TABLE_RE.finditer(body):
+                heading_matches = list(HEADING_RE.finditer(body[: table_match.start()]))
+                heading = next(
+                    (match for match in reversed(heading_matches)
+                     if not self._unit_heading(self._heading_title(match.group(1)))),
+                    None,
+                )
+                if heading is None or table_match.start() - heading.end() > 500:
+                    continue
+                table = BeautifulSoup(table_match.group(), "html.parser").find("table")
+                if table is None:
+                    continue
+                rows = table.find_all("tr")
+                year_columns = {
+                    index for tr in rows for index, cell in
+                    enumerate(tr.find_all("th", recursive=False))
+                    if cell.get_text(" ", strip=True) == group[1]
+                }
+                if len(year_columns) != 1:
+                    continue
+                column = next(iter(year_columns))
+                scale_match = re.search(
+                    r"\b(?:millions?|billions?|thousands?)\b",
+                    body[heading.end(): table_match.start()], re.IGNORECASE,
+                )
+                if scale_match is None:
+                    continue
+                scale = scale_match.group().lower()
+                evidence = body[heading.start(): table_match.end()]
+                for tr in rows:
+                    cells = tr.find_all(["td", "th"], recursive=False)
+                    if len(cells) <= column:
+                        continue
+                    label = " ".join(cells[0].stripped_strings)
+                    terms = self._terms(label) - {"total"}
+                    if not terms or not terms.issubset(requested):
+                        continue
+                    value = " ".join(cells[column].stripped_strings)
+                    if not re.fullmatch(r"\$?\s*\(?-?\d[\d,]*(?:\.\d+)?\)?", value):
+                        continue
+                    key = frozenset(terms)
+                    source = self._source("S1", parent_id, metadata, evidence)
+                    source["full_evidence_text"] = evidence
+                    source["source_hash"] = metadata.get("source_hash")
+                    row = VerifiedTableRow(label, group[1], value, scale, source)
+                    previous = chosen.get(key)
+                    if previous and previous.value.replace("$", "") != value.replace("$", ""):
+                        ambiguous.add(key)
+                    elif previous is None:
+                        chosen[key] = row
+        return tuple(row for key, row in chosen.items() if key not in ambiguous)
 
     def answer(
         self, question: str, scope: Scope, *, wants_complete_table: bool

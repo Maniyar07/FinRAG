@@ -184,6 +184,7 @@ if question:
             if result.scope.complete and result.decision in {
                 Decision.ANSWERED,
                 Decision.INSUFFICIENT_EVIDENCE,
+                Decision.VALIDATION_FAILED,
             }:
                 st.session_state.active_scope = result.scope
             st.session_state.pending_clarification = result.pending_clarification

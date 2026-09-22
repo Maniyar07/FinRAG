@@ -635,6 +635,7 @@ function renderMessage(message) {
     answered: "Grounded answer",
     clarify: "Needs details",
     insufficient_evidence: "Limited evidence",
+    validation_failed: "Answer could not be verified",
     data_unavailable: "Data unavailable",
     scope_conflict: "Scope conflict",
     out_of_scope: "Outside collection",
@@ -1123,7 +1124,7 @@ async function submitQuestion(question, { retry = false } = {}) {
       inherited_fields: Array.isArray(result.inherited_fields) ? result.inherited_fields : [],
     });
     targetChat.pending_clarification = cleanPendingClarification(result.pending_clarification);
-    const scopeDecisions = new Set(["answered", "insufficient_evidence"]);
+    const scopeDecisions = new Set(["answered", "insufficient_evidence", "validation_failed"]);
     if (result.scope?.complete && scopeDecisions.has(result.decision)) targetChat.scope = result.scope;
     targetChat.updatedAt = new Date().toISOString();
     state.lastAttempt = null;

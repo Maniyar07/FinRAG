@@ -12,6 +12,7 @@ class Decision(str, Enum):
     OUT_OF_SCOPE = "out_of_scope"
     DATA_UNAVAILABLE = "data_unavailable"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    VALIDATION_FAILED = "validation_failed"
     ANSWERED = "answered"
     ERROR = "error"
 

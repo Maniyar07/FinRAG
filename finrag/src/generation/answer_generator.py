@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,14 @@ from src.generation.financial_fact_validator import (
     validate_table_answer,
 )
 from src.schemas import RetrievalBundle
+from src.retrieval.structured_lookup import VerifiedTableRow
+
+
+MONEY_CLAIM_RE = re.compile(
+    r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand)?\b|"
+    r"\b(\d[\d,]*(?:\.\d+)?)\s+(billion|million|thousand)\b",
+    re.IGNORECASE,
+)
 
 
 class GroundedAnswer(BaseModel):
@@ -80,7 +89,46 @@ class AnswerGenerator:
     def _compound_answer_requires_inline_citations(answer: str) -> bool:
         """Declared IDs are insufficient for a multi-section synthesized answer."""
         nonempty_lines = [line for line in answer.splitlines() if line.strip()]
-        return len(answer) > 400 or len(nonempty_lines) >= 6
+        section_count = sum(bool(re.match(r"^#{1,6}\s", line)) for line in nonempty_lines)
+        bullet_count = sum(line.lstrip().startswith(("- ", "* ")) for line in nonempty_lines)
+        return section_count >= 2 or bullet_count >= 2 or len(nonempty_lines) >= 6
+
+    @staticmethod
+    def _verified_rows_error(
+        answer: str, cited_ids: tuple[str, ...], rows: tuple[VerifiedTableRow, ...]
+    ) -> str | None:
+        """Reject unsupported reported amounts when the indexed cells are known."""
+        if not rows:
+            return None
+        factors = {"thousand": Decimal("0.001"), "million": Decimal(1),
+                   "billion": Decimal(1000)}
+        expected = []
+        for row in rows:
+            raw = row.value.replace("$", "").replace(",", "").strip(" ()")
+            value = Decimal(raw) * factors.get(row.scale.rstrip("s"), Decimal(1))
+            expected.append((row, value))
+        claims = []
+        for match in MONEY_CLAIM_RE.finditer(answer):
+            raw = match.group(1) or match.group(3)
+            scale = (match.group(2) or match.group(4) or "million").lower()
+            value = Decimal(raw.replace(",", "")) * factors[scale]
+            decimals = len(raw.partition(".")[2])
+            tolerance = (
+                Decimal("0.5") * (Decimal(10) ** -decimals) * factors[scale]
+                if scale == "billion" else Decimal(0)
+            )
+            claims.append((value, tolerance))
+        for row, value in expected:
+            if not any(abs(claim - value) <= tolerance for claim, tolerance in claims):
+                return f"reported_value_missing_or_wrong:{row.label}:{row.year}"
+            if str(row.source["id"]).upper() not in cited_ids:
+                return f"reported_value_source_not_cited:{row.label}:{row.year}"
+        if any(
+            not any(abs(claim - value) <= tolerance for _, value in expected)
+            for claim, tolerance in claims
+        ):
+            return "unsupported_reported_amount"
+        return None
 
     @staticmethod
     def _uncited_substantive_bullet(answer: str) -> bool:
@@ -222,6 +270,7 @@ class AnswerGenerator:
         wants_table: bool = False,
         wants_complete_table: bool = False,
         fail_closed_on_invalid: bool = False,
+        verified_rows: tuple[VerifiedTableRow, ...] = (),
     ) -> GenerationResult:
         allowed_ids = ", ".join(str(source["id"]) for source in bundle.sources)
         narrative_groups: dict[tuple[str, str], list[str]] = {}
@@ -239,6 +288,7 @@ class AnswerGenerator:
         ) or "not separately tagged"
         previews: list[str] = []
         last_validation = AnswerValidation(False, UNVERIFIABLE_RESPONSE, "not_attempted")
+        previous_answer = ""
 
         if wants_complete_table:
             first_instruction = (
@@ -286,6 +336,15 @@ class AnswerGenerator:
             "dollar signs inside cells, and do not use "
             "code backticks, empty bold markers, or placeholder values.",
         ]
+        if verified_rows:
+            exact_rows = "; ".join(
+                f"{row.label} ({row.year}): {row.value} {row.scale} "
+                f"[{row.source['id']}]" for row in verified_rows
+            )
+            instructions = [
+                instruction + " Verified indexed table cells: " + exact_rows + "."
+                for instruction in instructions
+            ]
         if fail_closed_on_invalid:
             instructions.append(
                 "Write a short answer covering every requested company. Use the "
@@ -303,9 +362,29 @@ class AnswerGenerator:
                 "commentary or say the retrieved evidence does not establish a "
                 "cause. Do not invent a reason to fill a missing explanation."
             )
-        for attempt, instruction in enumerate(instructions, start=1):
+        for attempt in range(1, 4):
+            if (
+                attempt == 3
+                and not fail_closed_on_invalid
+                and "citation" not in last_validation.reason
+                and last_validation.reason != "missing_source_ids"
+            ):
+                break
+            instruction = instructions[min(attempt - 1, len(instructions) - 1)]
             if attempt == 3:
                 instruction += f" Previous failure: {last_validation.reason}."
+            if attempt > 1 and previous_answer and (
+                "citation" in last_validation.reason
+                or last_validation.reason == "missing_source_ids"
+            ):
+                instruction += (
+                    f" Repair this previous draft rather than starting over: "
+                    f"{previous_answer[:4000]}\nThe draft failed because "
+                    f"{last_validation.reason}. Put a supporting [S#] citation "
+                    "at the end of each factual paragraph or bullet. For comparisons, "
+                    "cite each company's section using that company's sources. "
+                    "Remove any claim whose source cannot be identified."
+                )
             if attempt > 1 and last_validation.reason.startswith(
                 "requested_revenue_change_mismatch:"
             ):
@@ -334,6 +413,7 @@ class AnswerGenerator:
                 )
                 continue
             previews.append(self._preview(answer))
+            previous_answer = answer
             last_validation = validate_answer_payload(
                 answer,
                 bundle.sources,
@@ -399,6 +479,14 @@ class AnswerGenerator:
                     )
                     continue
             if last_validation.valid:
+                row_error = self._verified_rows_error(
+                    last_validation.answer, last_validation.source_ids, verified_rows
+                ) if last_validation.answer != INSUFFICIENT_EVIDENCE_RESPONSE else None
+                if row_error:
+                    last_validation = AnswerValidation(
+                        False, UNVERIFIABLE_RESPONSE, row_error
+                    )
+                    continue
                 if last_validation.answer != INSUFFICIENT_EVIDENCE_RESPONSE:
                     table_check = validate_table_answer(
                         question, last_validation.answer, bundle.sources
@@ -433,7 +521,7 @@ class AnswerGenerator:
         ):
             return GenerationResult(
                 INSUFFICIENT_EVIDENCE_RESPONSE,
-                len(instructions),
+                len(previews),
                 last_validation.reason,
                 tuple(previews),
             )
@@ -441,14 +529,14 @@ class AnswerGenerator:
         if fail_closed_on_invalid:
             return GenerationResult(
                 INSUFFICIENT_EVIDENCE_RESPONSE,
-                len(instructions),
+                len(previews),
                 f"generation_validation_failed:{last_validation.reason}",
                 tuple(previews),
             )
 
         return GenerationResult(
             UNVERIFIABLE_RESPONSE,
-            len(instructions),
+            len(previews),
             f"generation_validation_failed:{last_validation.reason}",
             tuple(previews),
         )
