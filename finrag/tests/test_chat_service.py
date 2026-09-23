@@ -176,6 +176,41 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertIn("**14.93%**", answer)
         self.assertNotIn("MSFT revenue change:", answer)
 
+    def test_net_profit_margin_ratio_is_presented_as_a_percentage(self) -> None:
+        facts = (
+            SimpleNamespace(
+                fact_id="F1", ticker="TSLA", metric="Net income", period="2025",
+                raw_value="$3,855", source_id="S1", value_type=ValueType.CURRENCY,
+                currency="USD", scale="millions",
+            ),
+            SimpleNamespace(
+                fact_id="F2", ticker="TSLA", metric="Total revenues", period="2025",
+                raw_value="94,827", source_id="S2", value_type=ValueType.CURRENCY,
+                currency="USD", scale="millions",
+            ),
+        )
+        calculation = SimpleNamespace(
+            label="Calculate TSLA net profit margin",
+            result=SimpleNamespace(
+                input_fact_ids=("F1", "F2"),
+                result=Decimal("0.0406529785820494163"),
+                result_unit="ratio", currency=None, scale=None,
+                source_ids=("S1", "S2"),
+                operation=SimpleNamespace(value="ratio"),
+            ),
+        )
+
+        answer = ChatService._verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=(calculation,)),
+            "Provide revenue, net income, and calculate net profit margin.",
+        )
+
+        self.assertIn("**TSLA net profit margin:**", answer)
+        self.assertIn("net income (2025): USD 3,855 million", answer)
+        self.assertIn("total revenues (2025): USD 94,827 million", answer)
+        self.assertIn("**4.07%**", answer)
+        self.assertNotIn("0.04 ratio", answer)
+
     def test_calculation_summary_omits_unrequested_winner(self) -> None:
         facts = (
             SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
@@ -258,7 +293,7 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         )
 
         self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertIn("20 USD millions", result.answer)
+        self.assertIn("USD 20 million", result.answer)
         self.assertIn("Cash commitments may exceed", result.answer)
         self.assertEqual(service.generator.calls, [])
 
@@ -297,6 +332,39 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertIn("2024: 100", answer)
         self.assertIn("2025: 120", answer)
         self.assertIn("could not validate", answer)
+
+    def test_comparison_conclusion_uses_all_input_sources(self) -> None:
+        facts = (
+            SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
+            SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
+            SimpleNamespace(fact_id="F3", ticker="BBB", metric="Revenue", period="2024", raw_value="100", source_id="S3"),
+            SimpleNamespace(fact_id="F4", ticker="BBB", metric="Revenue", period="2025", raw_value="90", source_id="S4"),
+        )
+        calculations = tuple(
+            SimpleNamespace(
+                label=f"{ticker} revenue change",
+                result=SimpleNamespace(
+                    input_fact_ids=ids, result=Decimal(result),
+                    result_unit="percent", currency=None, scale=None,
+                    source_ids=sources,
+                    operation=SimpleNamespace(value="percentage_change"),
+                ),
+            )
+            for ticker, ids, result, sources in (
+                ("AAA", ("F1", "F2"), "20", ("S1", "S2")),
+                ("BBB", ("F3", "F4"), "-10", ("S3", "S4")),
+            )
+        )
+
+        answer = ChatService._verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=calculations),
+            "Identify which company performed better.",
+        )
+
+        self.assertIn("AAA performed better", answer)
+        conclusion = answer.splitlines()[-1]
+        for source_id in ("S1", "S2", "S3", "S4"):
+            self.assertIn(f"[{source_id}]", conclusion)
 
     def test_compound_comparison_uses_enabled_multihop_path(self) -> None:
         service = _service()

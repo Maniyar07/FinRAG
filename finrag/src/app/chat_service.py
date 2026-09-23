@@ -244,6 +244,11 @@ class ChatService:
         if not execution.calculations:
             return None
         facts = {fact.fact_id: fact for fact in execution.facts}
+        bundle = getattr(execution, "bundle", None)
+        source_years = {
+            str(source.get("id")): str(source.get("fiscal_year") or "")
+            for source in getattr(bundle, "sources", ())
+        }
         lines = ["### Calculated results"]
         for item in execution.calculations:
             result = item.result
@@ -251,10 +256,25 @@ class ChatService:
             if any(fact is None for fact in inputs):
                 return None
             input_labels: list[str] = []
+            ratio_input_labels: list[str] = []
             for fact in inputs:
-                period = str(getattr(fact, "column_label", "") or fact.period)
-                year = re.search(r"\b(?:19|20)\d{2}\b", period)
-                period = year.group(0) if year else period.strip()
+                period_candidates = (
+                    str(getattr(fact, "column_label", "") or ""),
+                    str(getattr(fact, "period", "") or ""),
+                    source_years.get(str(fact.source_id), ""),
+                )
+                year = next(
+                    (
+                        match.group(0)
+                        for candidate in period_candidates
+                        if (match := re.search(r"\b(?:19|20)\d{2}\b", candidate))
+                    ),
+                    None,
+                )
+                period = year or next(
+                    (candidate.strip() for candidate in period_candidates if candidate.strip()),
+                    "Period",
+                )
                 raw_value = str(fact.raw_value).strip()
                 if getattr(fact, "value_type", None) == ValueType.CURRENCY:
                     currency = str(getattr(fact, "currency", "") or "")
@@ -264,17 +284,15 @@ class ChatService:
                         part for part in (currency, raw_value, scale.rstrip("s")) if part
                     )
                 input_labels.append(f"{period}: {raw_value} [{fact.source_id}]")
-            inputs_text = " → ".join(input_labels)
-            value = f"{result.result:,.2f}".rstrip("0").rstrip(".")
-            unit = " ".join(
-                part
-                for part in (
-                    result.currency if result.result_unit == "currency" else None,
-                    result.scale if result.result_unit == "currency" else None,
-                    result.result_unit if result.result_unit != "currency" else None,
+                input_metric = str(
+                    getattr(fact, "metric", "")
+                    or getattr(fact, "row_label", "")
+                    or "value"
+                ).lower()
+                ratio_input_labels.append(
+                    f"{input_metric} ({period}): {raw_value} [{fact.source_id}]"
                 )
-                if part
-            ).replace("percentage_points", "percentage points")
+            inputs_text = " → ".join(input_labels)
             citations = "".join(f"[{source_id}]" for source_id in result.source_ids)
             first_fact = inputs[0]
             metric = str(
@@ -287,18 +305,47 @@ class ChatService:
             if ticker and not subject.startswith(ticker.lower() + " "):
                 subject = f"{ticker} {subject}"
             operation = result.operation.value.replace("_", " ")
-            formatted_result = (
-                f"{value}%" if result.result_unit == "percent"
-                else f"{value} {unit}".strip()
+            margin_ratio = (
+                result.result_unit == "ratio"
+                and bool(
+                    re.search(
+                        r"\b(?:margin|percentage|percent)\b",
+                        f"{question} {item.label}",
+                        re.IGNORECASE,
+                    )
+                )
             )
+            display_value = result.result * 100 if margin_ratio else result.result
+            value = f"{display_value:,.2f}".rstrip("0").rstrip(".")
+            if margin_ratio:
+                inputs_text = "; ".join(ratio_input_labels)
+                subject = f"{ticker} net profit margin".strip()
+                operation = "net profit margin"
+                formatted_result = f"{value}%"
+            elif result.result_unit == "percent":
+                formatted_result = f"{value}%"
+            elif result.result_unit == "currency":
+                scale = str(result.scale or "").rstrip("s")
+                formatted_result = " ".join(
+                    part for part in (result.currency, value, scale) if part
+                )
+            else:
+                unit = str(result.result_unit).replace("_", " ")
+                formatted_result = f"{value} {unit}".strip()
             lines.append(
                 f"- **{subject}:** {inputs_text}. {operation.capitalize()}: "
                 f"**{formatted_result}** {citations}."
             )
-        if len(execution.calculations) == 2 and re.search(
-            r"\bwhich\s+(?:company\s+)?(?:grew|increased|had\s+(?:the\s+)?(?:higher|larger))\b",
-            question, re.IGNORECASE,
-        ):
+        conclusion_requested = bool(
+            re.search(
+                r"\b(?:which|identify|conclusion|performed\s+better|grew\s+more|"
+                r"larger\s+(?:one|increase|change)|higher\s+(?:one|change|growth)|"
+                r"compare\b.{0,80}\bmargins?)\b",
+                question,
+                re.IGNORECASE,
+            )
+        )
+        if len(execution.calculations) == 2 and conclusion_requested:
             first, second = execution.calculations
             if (
                 first.result.operation == second.result.operation
@@ -309,11 +356,26 @@ class ChatService:
                     key=lambda item: item.result.result,
                 )
                 first_fact = facts[winner.result.input_fact_ids[0]]
-                citations = "".join(
-                    f"[{source_id}]" for source_id in winner.result.source_ids
+                all_source_ids = tuple(
+                    dict.fromkeys(
+                        source_id
+                        for calculation in execution.calculations
+                        for source_id in calculation.result.source_ids
+                    )
                 )
+                citations = "".join(f"[{source_id}]" for source_id in all_source_ids)
+                if re.search(r"\bperformed\s+better\b", question, re.IGNORECASE):
+                    conclusion = f"{first_fact.ticker} performed better based on the calculated change."
+                elif re.search(r"\bmargins?\b", question, re.IGNORECASE):
+                    conclusion = f"{first_fact.ticker} had the higher net profit margin."
+                elif re.search(r"\bgrew\s+more\b", question, re.IGNORECASE):
+                    conclusion = f"{first_fact.ticker} grew more."
+                elif re.search(r"\b(?:increase|larger)\b", question, re.IGNORECASE):
+                    conclusion = f"{first_fact.ticker} had the larger increase."
+                else:
+                    conclusion = f"{first_fact.ticker} had the higher calculated change."
                 lines.append(
-                    f"**{first_fact.ticker} grew more.** {citations}"
+                    f"**{conclusion}** {citations}"
                 )
         return "\n\n".join(lines)
 
@@ -416,6 +478,7 @@ class ChatService:
             sections = [numeric_text]
             missing: list[str] = []
             quote_ids: list[str] = []
+            quote_texts: list[str] = []
             selector = getattr(self, "narrative_quote_selector", None)
             for requirement in narrative_requirements:
                 try:
@@ -444,6 +507,7 @@ class ChatService:
                         missing.append(f"{group.ticker} {group.fiscal_year} {requirement.document_type}")
                         continue
                     quote_ids.append(quote.source_id)
+                    quote_texts.append(quote.text)
                     if quote.factors:
                         sections.append(
                             f"{quote.ticker} {quote.fiscal_year} {quote.doc_type} "
@@ -468,6 +532,33 @@ class ChatService:
                         missing.append(
                             f"direct historical cause for {group.ticker} {group.fiscal_year}"
                         )
+            if re.search(
+                r"\b(?:directly\s+connect|connection)\b.{0,100}\bchanges?\b",
+                question,
+                re.IGNORECASE,
+            ) and quote_ids:
+                direct_cause = all(
+                    re.search(
+                        r"\b(?:attribut\w*|because|driven by|due to|primarily|reflect\w*)\b",
+                        text,
+                        re.IGNORECASE,
+                    )
+                    for text in quote_texts
+                )
+                connection_citations = "".join(
+                    f"[{source_id}]" for source_id in dict.fromkeys(quote_ids)
+                )
+                if direct_cause:
+                    sections.append(
+                        "The retrieved passages directly attribute the reported changes "
+                        f"to the discussed factors. {connection_citations}"
+                    )
+                else:
+                    sections.append(
+                        "The retrieved risk passages describe possible business or revenue "
+                        "effects, but they do not establish that those risks caused the "
+                        f"calculated historical revenue changes. {connection_citations}"
+                    )
             if missing:
                 sections.append(
                     "The requested qualitative evidence could not be verified for: "

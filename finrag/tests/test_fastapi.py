@@ -332,6 +332,32 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertIsInstance(call["pending_clarification"], PendingClarification)
         self.assertEqual(call["pending_clarification"].scope.years, ("2025",))
 
+    def test_new_question_discards_stale_pending_scope_before_validation(self) -> None:
+        stale_pending = {
+            "original_question": "Compare JPM and Microsoft revenue.",
+            "scope": {
+                "tickers": ["JPM", "MSFT"],
+                "years": ["2024"],
+                "doc_type": None,
+                "requested_groups": [],
+                "required_doc_types": [],
+            },
+            "candidate_tickers": [],
+            "missing_fields": ["document type"],
+            "query_expansions": [],
+        }
+        payload = request_body(
+            question="What was MSFT revenue in the 2024 10-K?",
+            pending_clarification=stale_pending,
+        )
+
+        app = self.make_app()
+        with TestClient(app) as client:
+            response = client.post("/api/chat", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(FakeChatService.instances[0].calls[0]["pending_clarification"])
+
     def test_trace_is_omitted_when_server_disallows_it(self) -> None:
         app = self.make_app(allow_traces=False)
         with TestClient(app) as client:

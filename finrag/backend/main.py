@@ -30,6 +30,7 @@ from backend.models import (
 )
 from backend.service_manager import ServiceFactory, ServiceManager
 from src.app.chat_service import ChatService
+from src.retrieval.clarification_policy import merge_clarification_reply
 from src.schemas import ChatResult, PendingClarification, Scope
 
 
@@ -201,15 +202,22 @@ def _prepare_call(
 ) -> tuple[Scope, Scope, list[dict[str, str]], PendingClarification | None]:
     previous = payload.previous_scope
     _validate_scope_values(previous, service=service, field_name="previous_scope")
-    pending = payload.pending_clarification
-    if pending is not None:
+    pending_payload = payload.pending_clarification
+    pending = _pending_from_payload(pending_payload)
+    # A new substantive question supersedes an old clarification. Detect that
+    # before validating the stored scope so stale state from another index
+    # cannot block an unrelated request.
+    if pending is not None and merge_clarification_reply(pending, payload.question) is None:
+        pending = None
+        pending_payload = None
+    if pending_payload is not None:
         _validate_scope_values(
-            pending.scope,
+            pending_payload.scope,
             service=service,
             field_name="pending_clarification.scope",
         )
         available_tickers, _, _ = _available_dimensions(service)
-        if set(pending.candidate_tickers) - available_tickers:
+        if set(pending_payload.candidate_tickers) - available_tickers:
             raise ApiProblem(
                 422,
                 "invalid_scope",
@@ -231,7 +239,7 @@ def _prepare_call(
         doc_type=filters.document_type,
     )
     history = [message.model_dump() for message in payload.history]
-    return ui_scope, _scope_from_payload(previous), history, _pending_from_payload(pending)
+    return ui_scope, _scope_from_payload(previous), history, pending
 
 
 def _clean_text(value: object, *, max_length: int = 1_000) -> str | None:

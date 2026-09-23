@@ -93,6 +93,151 @@ def _narrative_sources(sources: list[dict], requirement_ids: set[str]) -> list[d
     ]
 
 
+def _risk_fallback_quotes(
+    candidates: list[dict],
+    accepted: dict[tuple[str, str], VerifiedQuote],
+    task: str,
+) -> None:
+    """Fill omitted risk groups with the best verbatim sentence from retrieved text."""
+    if (
+        not re.search(r"\brisks?\b", task, re.IGNORECASE)
+        or "liquidity" in task.casefold()
+    ):
+        return
+    stopwords = {
+        "about", "company", "compare", "directly", "explain", "factor",
+        "filing", "filings", "from", "major", "retrieved", "summarize",
+        "their", "then", "those", "whether", "with",
+    }
+    task_terms = {
+        word
+        for word in re.findall(r"[a-z]{4,}", task.casefold())
+        if word not in stopwords
+    }
+    requires_competition = bool(
+        re.search(r"\bcompet(?:e|es|ed|ing|ition|itive|itor|itors)\w*\b", task, re.IGNORECASE)
+    )
+    ranked: dict[tuple[str, str], tuple[int, VerifiedQuote]] = {}
+    for source in candidates:
+        key = (str(source["ticker"]), str(source["fiscal_year"]))
+        if key in accepted:
+            continue
+        body = _plain(
+            str(source.get("full_evidence_text") or source.get("evidence_text") or "")
+        )
+        for sentence in re.split(r"(?<=[.!?])\s+", body):
+            sentence = sentence.strip()
+            if not 60 <= len(sentence) <= 500:
+                continue
+            lowered = sentence.casefold()
+            if requires_competition and not re.search(r"\bcompet\w*\b", lowered):
+                continue
+            risk_signal = re.search(
+                r"\b(?:risk\w*|may|could|harm\w*|advers\w*|loss|"
+                r"uncertain\w*|disrupt\w*|fail\w*)\b",
+                lowered,
+            )
+            if not risk_signal:
+                continue
+            overlap = sum(term in lowered for term in task_terms)
+            score = (
+                5 * overlap
+                + 4 * ("risk factors" in str(source.get("section") or "").casefold())
+                + 3 * bool(re.search(r"\bcompet\w*\b", lowered))
+                + 2 * bool(re.search(r"\b(?:may|could)\b", lowered))
+            )
+            quote = VerifiedQuote(
+                ticker=key[0],
+                fiscal_year=key[1],
+                doc_type=str(source["doc_type"]),
+                source_id=str(source["id"]),
+                text=sentence,
+            )
+            if key not in ranked or score > ranked[key][0]:
+                ranked[key] = (score, quote)
+    for key, (_, quote) in ranked.items():
+        accepted.setdefault(key, quote)
+
+
+def _commentary_fallback_quotes(
+    candidates: list[dict],
+    accepted: dict[tuple[str, str], VerifiedQuote],
+    task: str,
+) -> None:
+    """Recover a verbatim management-commentary passage omitted by the model."""
+    if (
+        not re.search(r"\b(?:commentary|explain|summarize)\b", task, re.IGNORECASE)
+        or re.search(r"\b(?:reasons?|drivers?)\b", task, re.IGNORECASE)
+    ):
+        return
+    requested_metrics = [
+        metric
+        for metric in ("revenue", "income", "margin", "cash", "growth")
+        if re.search(rf"\b{metric}\w*\b", task, re.IGNORECASE)
+    ]
+    if not requested_metrics:
+        return
+    ranked: dict[tuple[str, str], tuple[int, VerifiedQuote]] = {}
+    for source in candidates:
+        if str(source.get("doc_type")) != "TRANSCRIPT":
+            continue
+        key = (str(source["ticker"]), str(source["fiscal_year"]))
+        if key in accepted:
+            continue
+        body = _plain(
+            str(source.get("full_evidence_text") or source.get("evidence_text") or "")
+        )
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", body)
+            if sentence.strip()
+        ]
+        for index, sentence in enumerate(sentences):
+            lowered = sentence.casefold()
+            metric_hits = sum(
+                bool(re.search(rf"\b{metric}\w*\b", lowered))
+                for metric in requested_metrics
+            )
+            if not metric_hits or not 50 <= len(sentence) <= 500:
+                continue
+            commentary_signal = re.search(
+                r"\b(?:grew|growth|increase\w*|decrease\w*|declin\w*|"
+                r"record|ended|driven|result|demand|deliver\w*)\b",
+                lowered,
+            )
+            if not commentary_signal:
+                continue
+            excerpt = sentence
+            if index + 1 < len(sentences):
+                following = sentences[index + 1]
+                if (
+                    len(excerpt) + len(following) + 1 <= 500
+                    and re.search(
+                        r"^(?:this|that|the (?:increase|decrease|change))\b.{0,80}"
+                        r"\b(?:result|driven|due|reflect)",
+                        following,
+                        re.IGNORECASE,
+                    )
+                ):
+                    excerpt = f"{excerpt} {following}"
+            score = (
+                5 * metric_hits
+                + 3 * bool(re.search(r"\b(?:year.over.year|annual|year)\b", lowered))
+                + 2 * bool(re.search(r"\b(?:driven|result|due to)\b", excerpt, re.IGNORECASE))
+            )
+            quote = VerifiedQuote(
+                ticker=key[0],
+                fiscal_year=key[1],
+                doc_type=str(source["doc_type"]),
+                source_id=str(source["id"]),
+                text=excerpt,
+            )
+            if key not in ranked or score > ranked[key][0]:
+                ranked[key] = (score, quote)
+    for key, (_, quote) in ranked.items():
+        accepted.setdefault(key, quote)
+
+
 class NarrativeQuoteSelector:
     """One model call chooses excerpts; exact source matching decides acceptance."""
 
@@ -322,4 +467,6 @@ class NarrativeQuoteSelector:
                         ranked[key] = (score, quote)
             for key, (_, quote) in ranked.items():
                 accepted.setdefault(key, quote)
+        _commentary_fallback_quotes(candidates, accepted, task)
+        _risk_fallback_quotes(candidates, accepted, task)
         return tuple(accepted.values())

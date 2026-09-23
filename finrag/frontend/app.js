@@ -1134,6 +1134,16 @@ async function submitQuestion(question, { retry = false } = {}) {
     if (error.name === "AbortError") {
       showToast("Request stopped.");
     } else {
+      if (
+        error.details?.code === "invalid_scope"
+        && String(error.details?.message || "").includes("pending_clarification")
+      ) {
+        chat.pending_clarification = null;
+        if (state.lastAttempt?.payload) {
+          state.lastAttempt.payload.pending_clarification = null;
+        }
+        saveHistory();
+      }
       showToast(error.message || "The request could not be completed.", "error");
       elements.retryBar.hidden = false;
     }

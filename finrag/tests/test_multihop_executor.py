@@ -133,6 +133,18 @@ class FakeFactPipeline:
         return FactValidationResult(valid_facts=tuple(facts))
 
 
+class WrongFactWithExactRecoveryPipeline(FakeFactPipeline):
+    def recover_exact_table_row(
+        self, *, metric_hint, period_year, sources, permitted_scope
+    ):
+        return FinancialFactPipeline(extractor=EmptyExtractor()).recover_exact_table_row(
+            metric_hint=metric_hint,
+            period_year=period_year,
+            sources=sources,
+            permitted_scope=permitted_scope,
+        )
+
+
 class RecoveringFactPipeline(FakeFactPipeline):
     def __init__(self) -> None:
         self.calls = 0
@@ -238,6 +250,81 @@ def plan() -> MultiHopPlan:
 
 
 class MultiHopExecutorTests(unittest.TestCase):
+    def test_indexed_statement_row_replaces_model_extracted_variant(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "statement.json").write_text(json.dumps({
+                "page_content": (
+                    "## Consolidated Statements of Operations\n(in millions)\n"
+                    "<table><tr><th>Metric</th><th>2024</th></tr>"
+                    "<tr><td>Total revenues</td><td>$97,690</td></tr></table>"
+                ),
+                "metadata": {
+                    "ticker": "TSLA", "fiscal_year": "2024", "doc_type": "10K",
+                    "item": "Item 8",
+                    "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+                    "source": "TSLA_2024_10K.pdf", "pdf_page_start": 50,
+                },
+            }), encoding="utf-8")
+            requirement = EvidenceRequirement(
+                requirement_id="revenue",
+                question="Find Tesla total revenue in 2024.",
+                evidence_type="numeric",
+                document_type="10K",
+                groups=(EvidenceGroup(ticker="TSLA", fiscal_year="2024"),),
+            )
+            executor = MultiHopExecutor(
+                document_search=FakeDocumentSearch(),
+                fact_pipeline=WrongFactWithExactRecoveryPipeline(),
+                statement_lookup=StructuredDocumentLookup(root),
+            )
+
+            result = executor.execute(
+                MultiHopPlan(
+                    original_question=requirement.question,
+                    requirements=(requirement,),
+                    calculations=(),
+                ),
+                permitted_scope=Scope(("TSLA",), ("2024",), "10K"),
+            )
+
+        self.assertTrue(result.complete)
+        self.assertEqual([fact.raw_value for fact in result.facts], ["$97,690"])
+        self.assertEqual(result.facts[0].currency, "USD")
+        self.assertEqual(result.facts[0].scale, "millions")
+
+    def test_temporal_calculation_orders_reversed_planner_inputs(self) -> None:
+        normal = plan()
+        reversed_calculation = normal.calculations[0].model_copy(
+            update={"inputs": tuple(reversed(normal.calculations[0].inputs))}
+        )
+        reversed_plan = normal.model_copy(
+            update={"calculations": (reversed_calculation,)}
+        )
+        executor = MultiHopExecutor(
+            document_search=FakeDocumentSearch(),
+            fact_pipeline=FakeFactPipeline(),
+        )
+
+        result = executor.execute(
+            reversed_plan,
+            permitted_scope=Scope(
+                ("MSFT",), ("2024", "2025"),
+                required_doc_types=("10K", "TRANSCRIPT"),
+            ),
+        )
+
+        calculation = result.calculations[0].result
+        self.assertEqual(calculation.result, Decimal("10.0"))
+        fact_by_id = {fact.fact_id: fact for fact in result.facts}
+        self.assertEqual(
+            [fact_by_id[fact_id].period for fact_id in calculation.input_fact_ids],
+            ["2024", "2025"],
+        )
+
     def test_exact_row_recovery_completes_a_missing_calculation_input(self) -> None:
         executor = MultiHopExecutor(
             document_search=FakeDocumentSearch(),

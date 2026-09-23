@@ -223,6 +223,22 @@ class ScopePolicyTests(unittest.TestCase):
         self.assertEqual(resolution.decision, Decision.CLARIFY)
         self.assertIn("evidence basis", resolution.message)
 
+    def test_unavailable_company_is_reported_before_document_clarification(self) -> None:
+        resolution = resolve_scope(
+            understand_query(
+                "Compare Microsoft and JPMorgan revenue growth from 2024 to 2025."
+            ),
+            available_keys={
+                ("MSFT", "2024", "10K"),
+                ("MSFT", "2024", "TRANSCRIPT"),
+                ("MSFT", "2025", "10K"),
+                ("MSFT", "2025", "TRANSCRIPT"),
+            },
+        )
+
+        self.assertEqual(resolution.decision, Decision.DATA_UNAVAILABLE)
+        self.assertIn("JPM", resolution.message)
+
     def test_bare_revenue_uses_only_available_document_type(self) -> None:
         resolution = resolve_scope(
             understand_query("What was TSLA revenue in 2025?"),

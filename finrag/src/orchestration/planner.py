@@ -10,6 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import MULTIHOP_MAX_CALCULATIONS, MULTIHOP_MAX_SEARCHES
+from src.constants import COMPANY_NAMES, TICKER_ALIASES
 from src.financial.calculator import CalculationOperation
 from src.generation.llm_engine import get_llm_engine
 from src.orchestration.models import (
@@ -39,6 +40,72 @@ DERIVED_CONCLUSION_RE = re.compile(
     r"\bcompare\b.{0,80}\b(?:calculated|percentage changes?|results?)\b",
     re.IGNORECASE,
 )
+
+SUPPORTED_CHANGE_METRICS = (
+    ("cash and cash equivalents", "cash_and_cash_equivalents"),
+    ("net income", "net_income"),
+    ("total assets", "total_assets"),
+    ("operating income", "operating_income"),
+    ("revenue", "revenue"),
+)
+
+
+def _safe_identifier(value: object, *, fallback: str) -> str:
+    """Normalize harmless model casing/punctuation without changing plan meaning."""
+    cleaned = re.sub(r"[^a-z0-9]+", "_", str(value or "").casefold()).strip("_")
+    if not cleaned:
+        cleaned = fallback
+    if not cleaned[0].isalpha():
+        cleaned = f"step_{cleaned}"
+    return cleaned[:64].rstrip("_")
+
+
+def _requirement_topic(requirement: EvidenceRequirement) -> tuple[str, str, str]:
+    """Identify equivalent per-company searches so their groups can be combined."""
+    text = requirement.question.casefold()
+    company_terms = {
+        alias.casefold()
+        for aliases in TICKER_ALIASES.values()
+        for alias in aliases
+    }
+    company_terms.update(name.casefold() for name in COMPANY_NAMES.values())
+    for term in sorted(company_terms, key=len, reverse=True):
+        text = re.sub(rf"\b{re.escape(term)}(?:'s|’s)?\b", " company ", text)
+    text = YEAR_RE.sub(" year ", text)
+    text = re.sub(r"\b(?:company|year)\b", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = " ".join(text.split())
+    return requirement.evidence_type.value, requirement.document_type, text
+
+
+def _merge_equivalent_requirements(
+    requirements: list[EvidenceRequirement],
+) -> tuple[list[EvidenceRequirement], dict[str, str]]:
+    """Merge the same search split by company and return the ID remapping."""
+    merged: list[EvidenceRequirement] = []
+    positions: dict[tuple[str, str, str], int] = {}
+    remap: dict[str, str] = {}
+    for requirement in requirements:
+        key = _requirement_topic(requirement)
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(merged)
+            merged.append(requirement)
+            remap[requirement.requirement_id] = requirement.requirement_id
+            continue
+        existing = merged[position]
+        groups = tuple(dict.fromkeys((*existing.groups, *requirement.groups)))
+        merged[position] = existing.model_copy(
+            update={
+                "groups": groups,
+                "requires_complete_coverage": (
+                    existing.requires_complete_coverage
+                    or requirement.requires_complete_coverage
+                ),
+            }
+        )
+        remap[requirement.requirement_id] = existing.requirement_id
+    return merged, remap
 
 
 class PlanPayload(BaseModel):
@@ -195,6 +262,34 @@ class MultiHopPlanner:
         if not permitted_scope.complete:
             raise ValueError("Multi-hop planning requires a complete scope.")
 
+        if (
+            {"10K", "TRANSCRIPT"}.issubset(_allowed_document_types(permitted_scope))
+            and "transcript" in cleaned.casefold()
+            and CALCULATION_INTENT_RE.search(cleaned)
+        ):
+            try:
+                fallback = self._mixed_source_change_fallback(
+                    question=cleaned,
+                    permitted_scope=permitted_scope,
+                )
+                validate_plan_scope(fallback, permitted_scope)
+                return fallback
+            except (TypeError, ValueError):
+                pass
+
+        # Common accounting formulas are safer and cheaper to plan
+        # deterministically than to ask the model to invent derived table rows.
+        if re.search(r"\bnet\s+profit\s+margin\b", cleaned, re.IGNORECASE):
+            try:
+                fallback = self._margin_fallback(
+                    question=cleaned,
+                    permitted_scope=permitted_scope,
+                )
+                validate_plan_scope(fallback, permitted_scope)
+                return fallback
+            except (TypeError, ValueError):
+                pass
+
         # The project's primary comparison shape is safer and cheaper to plan
         # deterministically. The model remains available for compound questions
         # that do not fit this exact metric/change pattern.
@@ -253,20 +348,201 @@ class MultiHopPlanner:
         raise RuntimeError("Multi-hop planner did not produce a plan.") from last_error
 
     @staticmethod
+    def _mixed_source_change_fallback(
+        *,
+        question: str,
+        permitted_scope: Scope,
+    ) -> MultiHopPlan:
+        """Plan transcript commentary plus annual filing changes deterministically."""
+        lowered = question.casefold().replace("-", " ")
+        metrics = [
+            (label, identifier)
+            for label, identifier in SUPPORTED_CHANGE_METRICS
+            if re.search(rf"\b{re.escape(label)}\b", lowered)
+        ]
+        if not metrics or len(permitted_scope.years) < 2:
+            raise ValueError("Mixed-source fallback requires metrics and two years.")
+        operation = (
+            CalculationOperation.PERCENTAGE_CHANGE
+            if "percentage change" in lowered
+            else CalculationOperation.ABSOLUTE_CHANGE
+        )
+        all_groups = tuple(
+            EvidenceGroup(ticker=ticker, fiscal_year=year)
+            for ticker, year in permitted_scope.groups
+        )
+        latest_year = max(permitted_scope.years)
+        transcript_groups = tuple(
+            EvidenceGroup(ticker=ticker, fiscal_year=year)
+            for ticker, year in permitted_scope.groups
+            if year == latest_year
+        )
+        narrative_task = re.split(
+            r"\bthen\s+calculate\b", question, maxsplit=1, flags=re.IGNORECASE
+        )[0].strip(" ,.;")
+        requirements: list[EvidenceRequirement] = [
+            EvidenceRequirement(
+                requirement_id="management_commentary",
+                question=narrative_task,
+                evidence_type=EvidenceType.NARRATIVE,
+                document_type="TRANSCRIPT",
+                groups=transcript_groups,
+            )
+        ]
+        for label, identifier in metrics:
+            requirements.append(
+                EvidenceRequirement(
+                    requirement_id=f"reported_{identifier}",
+                    question=(
+                        f"Find the exact reported {label} table row for every requested "
+                        "company and fiscal year, preserving period, units, and scale."
+                    ),
+                    evidence_type=EvidenceType.NUMERIC,
+                    document_type="10K",
+                    groups=all_groups,
+                )
+            )
+        calculations: list[PlannedCalculation] = []
+        for ticker in dict.fromkeys(group.ticker for group in all_groups):
+            ticker_groups = sorted(
+                (group for group in all_groups if group.ticker == ticker),
+                key=lambda group: group.fiscal_year,
+            )
+            if len(ticker_groups) < 2:
+                raise ValueError("Mixed-source changes require two periods per company.")
+            old_group, new_group = ticker_groups[0], ticker_groups[-1]
+            for label, identifier in metrics:
+                calculations.append(
+                    PlannedCalculation(
+                        calculation_id=(
+                            f"{ticker.casefold()}_{identifier}_{operation.value}"
+                        ),
+                        label=(
+                            f"{ticker} {label} {operation.value.replace('_', ' ')} "
+                            f"from {old_group.fiscal_year} to {new_group.fiscal_year}"
+                        ),
+                        operation=operation,
+                        inputs=(
+                            FactReference(
+                                requirement_id=f"reported_{identifier}",
+                                ticker=ticker,
+                                fiscal_year=old_group.fiscal_year,
+                                metric_hint=label,
+                            ),
+                            FactReference(
+                                requirement_id=f"reported_{identifier}",
+                                ticker=ticker,
+                                fiscal_year=new_group.fiscal_year,
+                                metric_hint=label,
+                            ),
+                        ),
+                    )
+                )
+        return MultiHopPlan(
+            original_question=question,
+            requirements=tuple(requirements),
+            calculations=tuple(calculations),
+        )
+
+    @staticmethod
+    def _margin_fallback(
+        *,
+        question: str,
+        permitted_scope: Scope,
+    ) -> MultiHopPlan:
+        """Plan net profit margin as net income divided by revenue."""
+        allowed_types = _allowed_document_types(permitted_scope)
+        if "10K" not in allowed_types or set(permitted_scope.required_doc_types) - {"10K"}:
+            raise ValueError("Margin fallback requires an annual filing scope.")
+        groups = tuple(
+            EvidenceGroup(ticker=ticker, fiscal_year=year)
+            for ticker, year in permitted_scope.groups
+        )
+        requirements: list[EvidenceRequirement] = [
+            EvidenceRequirement(
+                requirement_id="reported_revenue",
+                question=(
+                    "Find the exact total revenue table row for every requested company "
+                    "and fiscal year, preserving period, currency, units, and scale."
+                ),
+                evidence_type=EvidenceType.NUMERIC,
+                document_type="10K",
+                groups=groups,
+            ),
+            EvidenceRequirement(
+                requirement_id="reported_net_income",
+                question=(
+                    "Find the exact net income table row for every requested company "
+                    "and fiscal year, preserving period, currency, units, and scale."
+                ),
+                evidence_type=EvidenceType.NUMERIC,
+                document_type="10K",
+                groups=groups,
+            ),
+        ]
+        if re.search(r"\brisks?\b", question, re.IGNORECASE):
+            requirements.append(
+                EvidenceRequirement(
+                    requirement_id="risk_factor",
+                    question="Summarize one major risk factor for each requested company.",
+                    evidence_type=EvidenceType.NARRATIVE,
+                    document_type="10K",
+                    groups=groups,
+                )
+            )
+        calculations = tuple(
+            PlannedCalculation(
+                calculation_id=f"{ticker.casefold()}_{year}_net_profit_margin",
+                label=f"{ticker} {year} net profit margin",
+                operation=CalculationOperation.RATIO,
+                inputs=(
+                    FactReference(
+                        requirement_id="reported_net_income",
+                        ticker=ticker,
+                        fiscal_year=year,
+                        metric_hint="net income",
+                    ),
+                    FactReference(
+                        requirement_id="reported_revenue",
+                        ticker=ticker,
+                        fiscal_year=year,
+                        metric_hint="total revenue",
+                    ),
+                ),
+            )
+            for ticker, year in permitted_scope.groups
+        )
+        return MultiHopPlan(
+            original_question=question,
+            requirements=tuple(requirements),
+            calculations=calculations,
+        )
+
+    @staticmethod
     def _comparison_fallback(
         *,
         question: str,
         permitted_scope: Scope,
     ) -> MultiHopPlan:
         """Build the common metric/change/explanation plan without model judgment."""
-        metric_match = re.search(
+        calculated_metric_match = re.search(
+            r"\bcalculate\s+(?:each\s+(?:company|ticker)(?:'s|’s)?\s+)?"
+            r"(?P<metric>.+?)\s+(?:(?:percentage|absolute)\s+)?change\s+from\b",
+            question,
+            re.IGNORECASE,
+        )
+        metric_match = calculated_metric_match or re.search(
             r"\bcompare\s+(.+?)\s+for\s+(?=(?:19|20)\d{2})",
             question,
             re.IGNORECASE,
         )
         if metric_match is None:
             raise ValueError("Deterministic comparison fallback could not identify a metric.")
-        metric = metric_match.group(1)
+        metric = (
+            metric_match.group("metric")
+            if calculated_metric_match is not None
+            else metric_match.group(1)
+        )
         for value in (*permitted_scope.tickers, "Microsoft", "Tesla"):
             metric = re.sub(rf"\b{re.escape(value)}\b", " ", metric, flags=re.IGNORECASE)
         metric = re.sub(
@@ -305,13 +581,34 @@ class MultiHopPlanner:
             question,
             re.IGNORECASE,
         )
+        narrative_parts_before_calculation = re.split(
+            r"\bthen\s+calculate\b", question, maxsplit=1, flags=re.IGNORECASE
+        )
+        narrative_prefix = (
+            narrative_parts_before_calculation[0].strip(" ,.;")
+            if len(narrative_parts_before_calculation) == 2
+            else ""
+        )
+        if narrative_prefix and not re.search(
+            r"\b(?:risks?|explain|summarize|discuss)\b",
+            narrative_prefix,
+            re.IGNORECASE,
+        ):
+            narrative_prefix = ""
         required_types = set(permitted_scope.required_doc_types)
-        needs_narrative = narrative_match is not None or bool(required_types - {numeric_type})
+        needs_narrative = (
+            bool(narrative_prefix)
+            or narrative_match is not None
+            or bool(required_types - {numeric_type})
+        )
         if needs_narrative:
-            narrative_text = (
-                narrative_match.group(0).strip()
-                if narrative_match is not None
-                else "Find relevant management explanation for the comparison."
+            narrative_parts = [narrative_prefix]
+            if narrative_match is not None:
+                explanation = narrative_match.group(0).strip()
+                if explanation.casefold() not in narrative_prefix.casefold():
+                    narrative_parts.append(explanation)
+            narrative_text = " ".join(part for part in narrative_parts if part) or (
+                "Find relevant management explanation for the comparison."
             )
             narrative_type = (
                 "TRANSCRIPT"
@@ -360,6 +657,11 @@ class MultiHopPlanner:
             operation = CalculationOperation.RATIO
         elif "percentage change" in lowered:
             operation = CalculationOperation.PERCENTAGE_CHANGE
+        elif re.search(
+            r"\bchange\s+from\s+(?:19|20)\d{2}\s+to\s+(?:19|20)\d{2}\b",
+            lowered,
+        ):
+            operation = CalculationOperation.ABSOLUTE_CHANGE
         else:
             raise ValueError("Deterministic comparison fallback found no calculation.")
 
@@ -432,12 +734,46 @@ class MultiHopPlanner:
             raw_requirements = raw_payload.get("requirements")
             if not isinstance(raw_requirements, list) or not raw_requirements:
                 raise original_error
-            # Requirements control retrieval scope and are never repaired or
-            # dropped. Every one must validate exactly.
-            requirements = [
-                EvidenceRequirement.model_validate(item)
-                for item in raw_requirements
-            ]
+            requirement_fields = {
+                "requirement_id",
+                "question",
+                "evidence_type",
+                "document_type",
+                "groups",
+                "requires_complete_coverage",
+            }
+            requirements: list[EvidenceRequirement] = []
+            raw_id_map: dict[str, str] = {}
+            used_ids: set[str] = set()
+            for index, item in enumerate(raw_requirements, start=1):
+                if not isinstance(item, dict):
+                    raise original_error
+                original_id = str(item.get("requirement_id", ""))
+                normalized_id = _safe_identifier(
+                    original_id, fallback=f"requirement_{index}"
+                )
+                base_id = normalized_id
+                suffix = 2
+                while normalized_id in used_ids:
+                    tail = f"_{suffix}"
+                    normalized_id = f"{base_id[:64 - len(tail)]}{tail}"
+                    suffix += 1
+                used_ids.add(normalized_id)
+                cleaned = {
+                    key: value
+                    for key, value in item.items()
+                    if key in requirement_fields
+                }
+                cleaned["requirement_id"] = normalized_id
+                requirement = EvidenceRequirement.model_validate(cleaned)
+                requirements.append(requirement)
+                raw_id_map[original_id] = normalized_id
+
+            requirements, merged_id_map = _merge_equivalent_requirements(requirements)
+            raw_id_map = {
+                original: merged_id_map.get(normalized, normalized)
+                for original, normalized in raw_id_map.items()
+            }
 
             calculations: list[PlannedCalculation] = []
             raw_calculations = raw_payload.get("calculations", [])
@@ -458,7 +794,8 @@ class MultiHopPlanner:
                 "metric_hint",
             }
             valid_operations = {operation.value for operation in CalculationOperation}
-            for item in raw_calculations:
+            used_calculation_ids: set[str] = set()
+            for index, item in enumerate(raw_calculations, start=1):
                 if not isinstance(item, dict):
                     raise original_error
                 operation = str(item.get("operation", "")).strip()
@@ -469,6 +806,18 @@ class MultiHopPlanner:
                 cleaned_item = {
                     key: value for key, value in item.items() if key in allowed_fields
                 }
+                calculation_id = _safe_identifier(
+                    cleaned_item.get("calculation_id"),
+                    fallback=f"calculation_{index}",
+                )
+                base_id = calculation_id
+                suffix = 2
+                while calculation_id in used_calculation_ids:
+                    tail = f"_{suffix}"
+                    calculation_id = f"{base_id[:64 - len(tail)]}{tail}"
+                    suffix += 1
+                used_calculation_ids.add(calculation_id)
+                cleaned_item["calculation_id"] = calculation_id
                 raw_inputs = cleaned_item.get("inputs")
                 if not isinstance(raw_inputs, list):
                     raise original_error
@@ -481,6 +830,9 @@ class MultiHopPlanner:
                         for key, value in raw_input.items()
                         if key in reference_fields
                     }
+                    raw_requirement_id = str(normalized.get("requirement_id", ""))
+                    if raw_requirement_id in raw_id_map:
+                        normalized["requirement_id"] = raw_id_map[raw_requirement_id]
                     known_ids = {
                         requirement.requirement_id for requirement in requirements
                     }

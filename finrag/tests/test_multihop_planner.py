@@ -29,6 +29,83 @@ def requirement(*, ticker="MSFT", year="2024", document_type="10K") -> dict:
 
 
 class MultiHopPlannerTests(unittest.TestCase):
+    def test_raw_plan_normalizes_identifiers_and_ignores_top_level_noise(self) -> None:
+        payload = {
+            "requirements": [
+                {
+                    **requirement(),
+                    "requirement_id": "Revenue_MSFT_2024",
+                }
+            ],
+            "calculations": [],
+            "requires_complete_coverage": True,
+        }
+
+        parsed = MultiHopPlanner._parse_payload(payload, question="Find revenue and explain it.")
+
+        self.assertEqual(parsed.requirements[0].requirement_id, "revenue_msft_2024")
+
+    def test_raw_plan_merges_equivalent_per_company_searches(self) -> None:
+        requirements = []
+        for ticker, company in (("MSFT", "Microsoft"), ("TSLA", "Tesla")):
+            for key, topic, evidence_type in (
+                ("revenue", "total revenue", "numeric"),
+                ("income", "net income", "numeric"),
+                ("risk", "one major risk factor", "narrative"),
+            ):
+                requirements.append(
+                    {
+                        "requirement_id": f"{key}_{ticker}_2025",
+                        "question": f"What is {company}'s {topic} in 2025?",
+                        "evidence_type": evidence_type,
+                        "document_type": "10K",
+                        "groups": [{"ticker": ticker, "fiscal_year": "2025"}],
+                        "requires_complete_coverage": True,
+                    }
+                )
+        calculations = []
+        for ticker in ("MSFT", "TSLA"):
+            calculations.append(
+                {
+                    "calculation_id": f"Margin_{ticker}",
+                    "label": f"{ticker} net profit margin",
+                    "operation": "ratio",
+                    "inputs": [
+                        {
+                            "requirement_id": f"income_{ticker}_2025",
+                            "ticker": ticker,
+                            "fiscal_year": "2025",
+                            "metric_hint": "net income",
+                        },
+                        {
+                            "requirement_id": f"revenue_{ticker}_2025",
+                            "ticker": ticker,
+                            "fiscal_year": "2025",
+                            "metric_hint": "total revenue",
+                        },
+                    ],
+                }
+            )
+
+        parsed = MultiHopPlanner._parse_payload(
+            {"requirements": requirements, "calculations": calculations},
+            question="Calculate and compare both companies' net profit margins.",
+        )
+
+        self.assertEqual(len(parsed.requirements), 3)
+        self.assertEqual(len(parsed.calculations), 2)
+        self.assertTrue(
+            all(len(item.groups) == 2 for item in parsed.requirements)
+        )
+        known_ids = {item.requirement_id for item in parsed.requirements}
+        self.assertTrue(
+            all(
+                reference.requirement_id in known_ids
+                for calculation in parsed.calculations
+                for reference in calculation.inputs
+            )
+        )
+
     def test_common_comparison_has_a_scope_safe_deterministic_fallback(self) -> None:
         planner = MultiHopPlanner(chain=FakeChain({}))
         scope = Scope(
@@ -70,6 +147,117 @@ class MultiHopPlannerTests(unittest.TestCase):
             {group.key for group in narrative.groups},
             {("MSFT", "2025"), ("TSLA", "2025")},
         )
+
+    def test_compound_risk_and_generic_change_uses_bounded_fallback(self) -> None:
+        planner = MultiHopPlanner(chain=FakeChain({}))
+        scope = Scope(
+            ("MSFT", "TSLA"),
+            ("2024", "2025"),
+            requested_groups=(
+                ("MSFT", "2024"), ("MSFT", "2025"),
+                ("TSLA", "2024"), ("TSLA", "2025"),
+            ),
+        )
+
+        plan = planner.plan(
+            question=(
+                "Compare Microsoft and Tesla's 2024 competition risks, then "
+                "calculate each company's revenue change from 2024 to 2025. "
+                "Explain whether the filings directly connect those risks to the changes."
+            ),
+            permitted_scope=scope,
+        )
+
+        self.assertEqual(len(plan.requirements), 2)
+        numeric = next(
+            item for item in plan.requirements if item.evidence_type.value == "numeric"
+        )
+        narrative = next(
+            item for item in plan.requirements if item.evidence_type.value == "narrative"
+        )
+        self.assertIn("revenue", numeric.question.casefold())
+        self.assertEqual(
+            {group.key for group in narrative.groups},
+            {("MSFT", "2024"), ("TSLA", "2024")},
+        )
+        self.assertEqual(len(plan.calculations), 2)
+        self.assertTrue(
+            all(item.operation.value == "absolute_change" for item in plan.calculations)
+        )
+
+    def test_margin_plan_uses_income_over_revenue_for_each_company(self) -> None:
+        planner = MultiHopPlanner(chain=FakeChain({}))
+        scope = Scope(
+            ("MSFT", "TSLA"),
+            ("2025",),
+            "10K",
+            requested_groups=(("MSFT", "2025"), ("TSLA", "2025")),
+        )
+
+        plan = planner.plan(
+            question=(
+                "Provide revenue, net income, and net profit margin for each company; "
+                "compare their margins and summarize one risk factor for each company."
+            ),
+            permitted_scope=scope,
+        )
+
+        self.assertEqual(len(plan.requirements), 3)
+        self.assertEqual(len(plan.calculations), 2)
+        self.assertTrue(
+            all(item.operation.value == "ratio" for item in plan.calculations)
+        )
+        for calculation in plan.calculations:
+            self.assertEqual(
+                [reference.requirement_id for reference in calculation.inputs],
+                ["reported_net_income", "reported_revenue"],
+            )
+        risk = next(
+            item for item in plan.requirements if item.evidence_type.value == "narrative"
+        )
+        self.assertEqual(
+            {group.key for group in risk.groups},
+            {("MSFT", "2025"), ("TSLA", "2025")},
+        )
+
+    def test_transcript_commentary_and_filing_changes_use_stable_plan(self) -> None:
+        planner = MultiHopPlanner(chain=FakeChain({}))
+        scope = Scope(
+            ("TSLA",),
+            ("2024", "2025"),
+            required_doc_types=("10K", "TRANSCRIPT"),
+        )
+
+        plan = planner.plan(
+            question=(
+                "From Tesla's 2025 Q4 earnings-call transcript, summarize management's "
+                "revenue commentary. Then calculate Tesla's reported revenue and "
+                "net-income changes from its 2024 and 2025 10-Ks."
+            ),
+            permitted_scope=scope,
+        )
+
+        self.assertEqual(len(plan.requirements), 3)
+        self.assertEqual(
+            {item.document_type for item in plan.requirements},
+            {"10K", "TRANSCRIPT"},
+        )
+        narrative = next(
+            item for item in plan.requirements if item.evidence_type.value == "narrative"
+        )
+        self.assertEqual(
+            {group.key for group in narrative.groups}, {("TSLA", "2025")}
+        )
+        self.assertEqual(len(plan.calculations), 2)
+        self.assertEqual(
+            {item.inputs[0].metric_hint for item in plan.calculations},
+            {"revenue", "net income"},
+        )
+        for calculation in plan.calculations:
+            self.assertEqual(
+                [reference.fiscal_year for reference in calculation.inputs],
+                ["2024", "2025"],
+            )
 
     def test_liquidity_risk_search_does_not_repeat_balance_sheet_metric(self) -> None:
         planner = MultiHopPlanner(chain=FakeChain({}))

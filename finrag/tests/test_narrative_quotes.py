@@ -115,6 +115,55 @@ class NarrativeQuoteSelectorTests(unittest.TestCase):
         self.assertEqual(len(quotes), 1)
         self.assertEqual(quotes[0].text, passage)
 
+    def test_risk_selection_fills_a_company_group_omitted_by_model(self) -> None:
+        msft_passage = (
+            "Our competitors may develop products that gain greater market acceptance, "
+            "which could reduce our revenue and market share."
+        )
+        tsla_passage = (
+            "Increased competition could result in lower vehicle sales, revenue "
+            "shortfalls and loss of market share."
+        )
+        msft = source("S1", msft_passage, "MSFT")
+        tsla = source("S2", tsla_passage, "TSLA")
+        for candidate in (msft, tsla):
+            candidate["section"] = "Item 1A. RISK FACTORS"
+        selector = NarrativeQuoteSelector(chain=FakeChain({
+            "quotes": [{"source_id": "S2", "quote": tsla_passage}]
+        }))
+
+        quotes = selector.select(
+            question="Compare Microsoft and Tesla competition risks.",
+            task="Compare competition risks for both companies.",
+            sources=[msft, tsla],
+            requirement_ids={"drivers"},
+        )
+
+        self.assertEqual({quote.ticker for quote in quotes}, {"MSFT", "TSLA"})
+        self.assertEqual(
+            next(quote.text for quote in quotes if quote.ticker == "MSFT"),
+            msft_passage,
+        )
+
+    def test_transcript_commentary_is_recovered_when_model_returns_none(self) -> None:
+        passage = (
+            "On the energy front, we ended the year with nearly $12.8 billion in "
+            "revenue, a 26.6% year-over-year growth. This was the result of high "
+            "deployments in all regions and continued strength in demand."
+        )
+        candidate = source("S1", passage, "TSLA")
+        selector = NarrativeQuoteSelector(chain=FakeChain({"quotes": []}))
+
+        quotes = selector.select(
+            question="Summarize management's revenue commentary.",
+            task="Summarize management's revenue commentary from the transcript.",
+            sources=[candidate],
+            requirement_ids={"drivers"},
+        )
+
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(quotes[0].text, passage)
+
     def test_liquidity_requires_an_adverse_risk_not_just_a_covenant_fact(self) -> None:
         passage = "Under certain circumstances we are required to maintain liquidity."
         selector = NarrativeQuoteSelector(chain=FakeChain({

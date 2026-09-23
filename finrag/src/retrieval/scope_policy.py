@@ -221,6 +221,21 @@ def resolve_scope(
             tuple(inherited),
         )
 
+    if available_keys is not None:
+        unavailable = _missing_sources(scope, available_keys)
+        if unavailable:
+            formatted = ", ".join(
+                f"{ticker} {year} {document_type}"
+                for ticker, year, document_type in unavailable
+            )
+            return ScopeResolution(
+                Decision.DATA_UNAVAILABLE,
+                scope,
+                f"The requested source is not loaded: {formatted}. Choose an available "
+                "company, year, or document type.",
+                tuple(inherited),
+            )
+
     if (
         understanding.topic == "performance"
         and not understanding.requested_doc_types
@@ -236,17 +251,5 @@ def resolve_scope(
             "transcript, or both with periods reported separately.",
             tuple(inherited),
         )
-
-    if available_keys is not None:
-        unavailable = _missing_sources(scope, available_keys)
-        if unavailable:
-            formatted = ", ".join(f"{ticker} {year} {doc_type}" for ticker, year, doc_type in unavailable)
-            return ScopeResolution(
-                Decision.DATA_UNAVAILABLE,
-                scope,
-                f"The requested source is not loaded: {formatted}. Choose an available "
-                "company, year, or document type.",
-                tuple(inherited),
-            )
 
     return ScopeResolution(Decision.SEARCH, scope, inherited_fields=tuple(inherited))

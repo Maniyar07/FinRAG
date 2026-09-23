@@ -7,7 +7,11 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 
-from src.financial.calculator import CalculationRequest, CalculationResult
+from src.financial.calculator import (
+    CalculationOperation,
+    CalculationRequest,
+    CalculationResult,
+)
 from src.financial.fact_pipeline import FinancialFactPipeline
 from src.financial.models import ValidatedFinancialFact, ValueType
 from src.orchestration.models import (
@@ -571,6 +575,52 @@ def _select_fact(
     return next(iter(unique.values()))
 
 
+TEMPORAL_CHANGE_OPERATIONS = frozenset(
+    {
+        CalculationOperation.ABSOLUTE_CHANGE,
+        CalculationOperation.PERCENTAGE_CHANGE,
+        CalculationOperation.PERCENTAGE_POINT_CHANGE,
+        CalculationOperation.BASIS_POINT_CHANGE,
+        CalculationOperation.CAGR,
+    }
+)
+
+
+def _ordered_calculation_facts(
+    calculation: object,
+    selected: tuple[ValidatedFinancialFact, ...],
+) -> tuple[ValidatedFinancialFact, ...]:
+    """Enforce old-to-new order for temporal calculations.
+
+    Planner output remains useful for binding facts, but chronological arithmetic
+    must not depend on the order produced by a language model.
+    """
+    operation = getattr(calculation, "operation", None)
+    inputs = tuple(getattr(calculation, "inputs", ()))
+    if operation not in TEMPORAL_CHANGE_OPERATIONS or len(selected) != 2:
+        return selected
+    if len(inputs) != 2 or inputs[0].ticker != inputs[1].ticker:
+        return selected
+
+    def time_key(item: tuple[object, ValidatedFinancialFact]) -> tuple[int, str]:
+        reference, fact = item
+        text = " ".join(
+            str(value or "")
+            for value in (
+                getattr(reference, "period", None),
+                getattr(reference, "fiscal_year", None),
+                fact.column_label,
+                fact.period,
+            )
+        )
+        years = YEAR_RE.findall(text)
+        year = int(years[0]) if years else 0
+        return year, text.casefold()
+
+    ordered = sorted(zip(inputs, selected), key=time_key)
+    return tuple(fact for _, fact in ordered)
+
+
 class MultiHopExecutor:
     """Run planned searches directly; no graph engine or generic tool registry."""
 
@@ -909,11 +959,13 @@ class MultiHopExecutor:
                                 off_metric_facts.append(fact)
                         rejections.extend(exact_result.rejected_facts)
                 # Search ranking can miss an indexed statement parent. Read
-                # its requested row/year directly before declaring a fact absent.
-                if self.statement_lookup is not None:
+                # its requested row/year directly. Exact indexed statement
+                # cells replace model-extracted variants for the same group.
+                if (
+                    self.statement_lookup is not None
+                    and requirement.document_type == "10K"
+                ):
                     for group in requirement.groups:
-                        if group.key in fact_group_keys():
-                            continue
                         recovery_scope = Scope(
                             tickers=(group.ticker,), years=(group.fiscal_year,),
                             doc_type=requirement.document_type,
@@ -946,11 +998,25 @@ class MultiHopExecutor:
                                 sources=[indexed_source],
                                 permitted_scope=recovery_scope,
                             )
-                            for fact in recovered.valid_facts:
-                                if matches_planned_reference(fact):
+                            exact_facts = [
+                                fact for fact in recovered.valid_facts
+                                if matches_planned_reference(fact)
+                            ]
+                            if exact_facts:
+                                for fact_id, fact in tuple(valid_map.items()):
+                                    source = source_map.get(fact.source_id, {})
+                                    fact_group = (
+                                        fact.ticker,
+                                        str(source.get("fiscal_year", "")),
+                                    )
+                                    if fact_group == group.key and matches_planned_reference(fact):
+                                        valid_map.pop(fact_id, None)
+                                for fact in exact_facts:
                                     valid_map[fact.fact_id] = fact
-                                else:
-                                    off_metric_facts.append(fact)
+                            off_metric_facts.extend(
+                                fact for fact in recovered.valid_facts
+                                if fact not in exact_facts
+                            )
                             rejections.extend(recovered.rejected_facts)
                 recovered_groups.extend(
                     list(group.key) for group in initial_missing
@@ -1069,6 +1135,7 @@ class MultiHopExecutor:
                     _select_fact(reference, facts_by_requirement, source_map)
                     for reference in planned.inputs
                 )
+                selected = _ordered_calculation_facts(planned, selected)
                 request = CalculationRequest(
                     operation=planned.operation,
                     input_fact_ids=tuple(fact.fact_id for fact in selected),
