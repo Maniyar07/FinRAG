@@ -47,18 +47,22 @@ ANAPHORA_RE = re.compile(
     r"\b(that|those|it|its|they|their|them|the same|former|latter)\b",
     re.IGNORECASE,
 )
-TEN_K_RE = re.compile(
-    r"\b(10[- ]?k(?:s|'s)?|annual reports?|sec filings?|"
-    r"item\s+\d+[a-c]?|risk factors?|footnotes?)\b",
+EXPLICIT_TEN_K_RE = re.compile(
+    r"\b(10[- ]?k(?:s|'s)?|annual reports?|item\s+\d+[a-c]?|footnotes?)\b",
     re.IGNORECASE,
 )
-EXPLICIT_TEN_K_RE = re.compile(
-    r"\b(10[- ]?k(?:s|'s)?|annual reports?|sec filings?|item\s+\d+[a-c]?|footnotes?)\b",
+SEC_FORM_RE = re.compile(
+    r"\b(?:form\s+)?(?P<form>\d{1,2}\s*-\s*[a-z])(?:s|'s)?\b",
     re.IGNORECASE,
 )
 TRANSCRIPT_RE = re.compile(
     r"\b(transcripts?|earnings calls?|conference calls?|prepared remarks?|q\s*&\s*a|"
     r"questions?\s+(?:and|&)\s+answers?|speaker|who said|management said)\b",
+    re.IGNORECASE,
+)
+MIXED_EVIDENCE_RE = re.compile(
+    r"\bcalculat\w*\b.*\b(?:explain|summarize|commentary|reasons?|drivers?)\b|"
+    r"\b(?:explain|summarize|commentary|reasons?|drivers?)\b.*\bcalculat\w*\b",
     re.IGNORECASE,
 )
 LATEST_YEAR_RE = re.compile(
@@ -201,7 +205,7 @@ def _document_years(text: str) -> tuple[str, ...]:
     """
     year = r"(?P<year>(?:19|20)\d{2})"
     document = (
-        r"(?:form\s+)?10[- ]?k(?:s|'s)?|annual reports?|sec filings?|"
+        r"(?:form\s+)?\d{1,2}\s*-\s*[a-z](?:s|'s)?|annual reports?|sec filings?|"
         r"earnings transcripts?|earnings calls?|conference calls?|transcripts?"
     )
     patterns = (
@@ -248,30 +252,43 @@ def understand_query(query: str) -> QueryUnderstanding:
     requested_groups = _paired_groups(upper, tickers, years)
 
     transcript_signal = bool(TRANSCRIPT_RE.search(normalized))
+    mixed_evidence_signal = (
+        transcript_signal
+        and len(mentioned_years) > 1
+        and bool(MIXED_EVIDENCE_RE.search(normalized))
+    )
+    if mixed_evidence_signal:
+        years = tuple(year for year in mentioned_years if year in YEARS)
+        unsupported_years = tuple(year for year in mentioned_years if year not in YEARS)
+        reference_years = ()
+        requested_groups = _paired_groups(upper, tickers, years)
+    sec_form_types = tuple(
+        dict.fromkeys(
+            re.sub(r"\W", "", match.group("form")).upper()
+            for match in SEC_FORM_RE.finditer(normalized)
+        )
+    )
     explicit_ten_k_signal = bool(EXPLICIT_TEN_K_RE.search(normalized))
     risk_factor_signal = bool(
         re.search(r"\brisk factors?\b", normalized, re.IGNORECASE)
     )
     ten_k_signal = explicit_ten_k_signal or (
-        risk_factor_signal and not transcript_signal
+        risk_factor_signal and not transcript_signal and not sec_form_types
+    ) or (
+        mixed_evidence_signal
     )
     explicit_both_doc_types = bool(BOTH_DOC_RE.search(normalized))
+    detected_doc_types = (
+        sec_form_types
+        + (("10K",) if ten_k_signal else ())
+        + (("TRANSCRIPT",) if transcript_signal else ())
+    )
     requested_doc_types = (
         ("10K", "TRANSCRIPT")
-        if explicit_both_doc_types or (ten_k_signal and transcript_signal)
-        else ("TRANSCRIPT",)
-        if transcript_signal
-        else ("10K",)
-        if ten_k_signal
-        else ()
+        if explicit_both_doc_types
+        else tuple(dict.fromkeys(detected_doc_types))
     )
-    doc_type = (
-        "TRANSCRIPT"
-        if transcript_signal and not ten_k_signal
-        else "10K"
-        if ten_k_signal and not transcript_signal
-        else None
-    )
+    doc_type = requested_doc_types[0] if len(requested_doc_types) == 1 else None
 
     topic = None
     for name, pattern in TOPICS:

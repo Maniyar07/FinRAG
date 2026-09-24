@@ -4,7 +4,7 @@ import unittest
 
 from src.financial.fact_extractor import FinancialFactExtractor
 from src.financial.fact_pipeline import FinancialFactPipeline
-from src.financial.fact_validator import FinancialFactValidator
+from src.financial.extracted_fact_validator import ExtractedFactValidator
 from src.financial.models import CandidateFinancialFact, FactExtractionPayload
 from src.schemas import Scope
 
@@ -78,7 +78,7 @@ class FinancialFactPipelineTests(unittest.TestCase):
         self.assertEqual(fact.source_id, "S1")
 
     def test_validator_accepts_a_fact_tied_to_source_and_scope(self) -> None:
-        validator = FinancialFactValidator()
+        validator = ExtractedFactValidator()
         result = validator.validate(
             [candidate()],
             [source()],
@@ -92,7 +92,7 @@ class FinancialFactPipelineTests(unittest.TestCase):
         self.assertEqual(result.rejected_facts, ())
 
     def test_validator_accepts_supported_table_tokens_when_cells_are_noncontiguous(self) -> None:
-        result = FinancialFactValidator().validate(
+        result = ExtractedFactValidator().validate(
             [candidate(evidence_excerpt="Effective rate 2024 18.2%")],
             [source()],
         )
@@ -100,7 +100,7 @@ class FinancialFactPipelineTests(unittest.TestCase):
         self.assertEqual(len(result.valid_facts), 1)
 
     def test_validator_rejects_excerpt_words_absent_from_source(self) -> None:
-        result = FinancialFactValidator().validate(
+        result = ExtractedFactValidator().validate(
             [candidate(evidence_excerpt="Effective rate 2024 18.2% estimated")],
             [source()],
         )
@@ -112,7 +112,7 @@ class FinancialFactPipelineTests(unittest.TestCase):
         )
 
     def test_validator_rejects_unknown_source_and_fabricated_value(self) -> None:
-        validator = FinancialFactValidator()
+        validator = ExtractedFactValidator()
         result = validator.validate(
             [candidate(source_id="S9"), candidate(raw_value="17.4%")],
             [source()],
@@ -125,7 +125,7 @@ class FinancialFactPipelineTests(unittest.TestCase):
         )
 
     def test_validator_rejects_source_outside_permitted_scope(self) -> None:
-        result = FinancialFactValidator().validate(
+        result = ExtractedFactValidator().validate(
             [candidate()],
             [source()],
             permitted_scope=Scope(("TSLA",), ("2024",), "10K"),
@@ -151,7 +151,7 @@ class FinancialFactPipelineTests(unittest.TestCase):
         chain = FakeChain({"facts": [candidate().model_dump()]})
         pipeline = FinancialFactPipeline(
             extractor=FinancialFactExtractor(chain=chain),
-            validator=FinancialFactValidator(),
+            validator=ExtractedFactValidator(),
         )
 
         result = pipeline.run(

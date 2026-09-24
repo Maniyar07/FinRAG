@@ -27,6 +27,10 @@ TABLE_STOP_WORDS = frozenset(
     "full give in inside into of on presented provide report requested show table the "
     "this to whole with year".split()
 )
+PERIOD_ROW_TERMS = frozenset(
+    "ended ending fiscal quarter quarters month months day days january february "
+    "march april may june july august september october november december".split()
+)
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,9 @@ class StructuredDocumentLookup:
             for word in words
             if word not in TABLE_STOP_WORDS
         }
+        terms = {"operation" if term == "operating" else term for term in terms}
+        if {"income", "operation"}.issubset(terms):
+            terms.discard("loss")
         # Filings use "statements of operations" and "income statements" for
         # the same primary statement.
         if "statement" in terms and "operation" in terms:
@@ -238,6 +245,20 @@ class StructuredDocumentLookup:
     def statement_rows(self, question: str, scope: Scope) -> tuple[VerifiedTableRow, ...]:
         """Find requested row/year cells in indexed 10-K statement tables."""
         group = self._group(scope)
+        if group is None and len(scope.groups) > 1 and scope.doc_type == "10K":
+            return tuple(
+                row
+                for ticker, year in scope.groups
+                for row in self.statement_rows(
+                    question,
+                    Scope(
+                        tickers=(ticker,),
+                        years=(year,),
+                        doc_type="10K",
+                        requested_groups=((ticker, year),),
+                    ),
+                )
+            )
         if group is None:
             return ()
         requested = self._terms(question) - self._terms(group[0])
@@ -281,12 +302,20 @@ class StructuredDocumentLookup:
                         continue
                     label = " ".join(cells[0].stripped_strings)
                     terms = self._terms(label) - {"total"}
-                    if not terms or not terms.issubset(requested):
+                    semantic_terms = {
+                        term
+                        for term in terms
+                        if term not in PERIOD_ROW_TERMS and not term.isdigit()
+                    }
+                    # Parser-produced period rows can look numeric (for example,
+                    # "Year Ended June 30 | 2025") but are column structure, not
+                    # financial facts. Only rows with a semantic label are eligible.
+                    if not semantic_terms or not semantic_terms.issubset(requested):
                         continue
                     value = " ".join(cells[column].stripped_strings)
                     if not re.fullmatch(r"\$?\s*\(?-?\d[\d,]*(?:\.\d+)?\)?", value):
                         continue
-                    key = frozenset(terms)
+                    key = frozenset(semantic_terms)
                     source = self._source("S1", parent_id, metadata, evidence)
                     source["full_evidence_text"] = evidence
                     source["source_hash"] = metadata.get("source_hash")
@@ -296,7 +325,41 @@ class StructuredDocumentLookup:
                         ambiguous.add(key)
                     elif previous is None:
                         chosen[key] = row
-        return tuple(row for key, row in chosen.items() if key not in ambiguous)
+        eligible = {
+            key: row for key, row in chosen.items() if key not in ambiguous
+        }
+        question_terms = [
+            term
+            for word in re.findall(r"[A-Za-z]{3,}", question.casefold())
+            for term in self._terms(word)
+        ]
+
+        def separately_requested(
+            broad: frozenset[str], specific: frozenset[str]
+        ) -> bool:
+            """Detect a broad metric mention separate from its specific variant."""
+            extras = specific - broad
+            width = len(broad) + 2
+            return any(
+                question_terms[end - 1] in broad
+                and broad.issubset(window)
+                and not extras.intersection(window)
+                for end in range(1, len(question_terms) + 1)
+                for window in (
+                    set(question_terms[max(0, end - width):end]),
+                )
+            )
+
+        # When both a generic and a more specific matching row exist, retain the
+        # specific row unless the question names the broad metric separately.
+        return tuple(
+            row
+            for key, row in eligible.items()
+            if not any(
+                key < other and not separately_requested(key, other)
+                for other in eligible
+            )
+        )
 
     def answer(
         self, question: str, scope: Scope, *, wants_complete_table: bool

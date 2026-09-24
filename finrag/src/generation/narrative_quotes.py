@@ -38,6 +38,20 @@ def _plain(value: str) -> str:
     return " ".join(text.split())
 
 
+def _company_wide_metric_statement(text: str, metric: str) -> bool:
+    """Distinguish an annual/company total from similarly named segment metrics."""
+    escaped = re.escape(metric)
+    return bool(
+        re.search(rf"\b(?:total company|companywide|company-wide)\s+{escaped}\b", text, re.I)
+        or re.search(
+            rf"\b(?:this|fiscal|full)[- ]year\b.{{0,100}}\b{escaped}\b"
+            rf".{{0,100}}\byear.over.year\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _relevant_to_task(quote: str, task: str) -> bool:
     lowered = task.casefold()
     if "research and development" in lowered or "r&d" in lowered:
@@ -77,7 +91,12 @@ def _relevant_to_task(quote: str, task: str) -> bool:
             quote,
             re.IGNORECASE,
         )
-        return (not metric or metric in quote.casefold()) and bool(causal_link)
+        broad_metric = metric and len(metric.split()) == 1
+        return (
+            (not metric or metric in quote.casefold())
+            and bool(causal_link)
+            and (not broad_metric or _company_wide_metric_statement(quote, metric))
+        )
     return True
 
 
@@ -165,18 +184,29 @@ def _commentary_fallback_quotes(
     task: str,
 ) -> None:
     """Recover a verbatim management-commentary passage omitted by the model."""
-    if (
-        not re.search(r"\b(?:commentary|explain|summarize)\b", task, re.IGNORECASE)
-        or re.search(r"\b(?:reasons?|drivers?)\b", task, re.IGNORECASE)
+    if not re.search(
+        r"\b(?:commentary|explain|summarize|reasons?|drivers?)\b",
+        task,
+        re.IGNORECASE,
     ):
         return
-    requested_metrics = [
-        metric
-        for metric in ("revenue", "income", "margin", "cash", "growth")
-        if re.search(rf"\b{metric}\w*\b", task, re.IGNORECASE)
-    ]
-    if not requested_metrics:
+    topic = task.split(":", 1)[0] if ":" in task else task
+    stopwords = {
+        "and", "commentary", "discuss", "explain", "management", "relevant",
+        "summarize", "the", "from", "transcript", "expense",
+    }
+    topic_terms = {
+        term[:-1] if term.endswith("s") and len(term) > 4 else term
+        for term in re.findall(r"[a-z]{3,}", topic.casefold())
+        if term not in stopwords
+    }
+    if not topic_terms:
         return
+    historical_reason = bool(
+        re.search(r"\b(?:reasons?|drivers?)\b", task, re.IGNORECASE)
+    )
+    broad_causal_topic = historical_reason and len(topic_terms) == 1
+    required_hits = 1 if len(topic_terms) == 1 else 2
     ranked: dict[tuple[str, str], tuple[int, VerifiedQuote]] = {}
     for source in candidates:
         if str(source.get("doc_type")) != "TRANSCRIPT":
@@ -194,11 +224,12 @@ def _commentary_fallback_quotes(
         ]
         for index, sentence in enumerate(sentences):
             lowered = sentence.casefold()
-            metric_hits = sum(
-                bool(re.search(rf"\b{metric}\w*\b", lowered))
-                for metric in requested_metrics
-            )
-            if not metric_hits or not 50 <= len(sentence) <= 500:
+            sentence_terms = {
+                term[:-1] if term.endswith("s") and len(term) > 4 else term
+                for term in re.findall(r"[a-z]{3,}", lowered)
+            }
+            metric_hits = len(topic_terms.intersection(sentence_terms))
+            if metric_hits < required_hits or not 50 <= len(sentence) <= 500:
                 continue
             commentary_signal = re.search(
                 r"\b(?:grew|growth|increase\w*|decrease\w*|declin\w*|"
@@ -206,6 +237,21 @@ def _commentary_fallback_quotes(
                 lowered,
             )
             if not commentary_signal:
+                continue
+            if historical_reason:
+                if re.search(
+                    r"\b(?:expect|forecast|outlook|will|future)\w*\b",
+                    sentence,
+                    re.IGNORECASE,
+                ) or not re.search(
+                    r"\b(?:attribut\w*|because|driven by|due to|primarily|reflect\w*)\b",
+                    sentence,
+                    re.IGNORECASE,
+                ):
+                    continue
+            if broad_causal_topic and not _company_wide_metric_statement(
+                sentence, next(iter(topic_terms))
+            ):
                 continue
             excerpt = sentence
             if index + 1 < len(sentences):

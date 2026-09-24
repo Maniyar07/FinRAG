@@ -138,6 +138,123 @@ def test_requested_statement_rows_use_matching_year_and_metric(tmp_path) -> None
     assert all(row.year == "2025" and row.scale == "millions" for row in rows)
 
 
+def test_statement_rows_ignore_numeric_period_structure(tmp_path) -> None:
+    _parent(
+        tmp_path, "operations-period-row", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Income Statements\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2025</th><th>2024</th></tr>"
+            "<tr><td>Year Ended June 30,</td><td>2025</td><td>2024</td></tr>"
+            "<tr><td>Total revenue</td><td>281,724</td><td>245,122</td></tr>"
+            "</table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What was total revenue for the fiscal year ended June 30, 2025?",
+        Scope(tickers=("MSFT",), years=("2025",), doc_type="10K"),
+    )
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Total revenue", "281,724")
+    ]
+
+
+def test_statement_rows_prefer_specific_metric_over_generic_match(tmp_path) -> None:
+    _parent(
+        tmp_path, "automotive-revenue", ticker="TSLA", year="2024", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Consolidated Statements of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2024</th><th>2023</th></tr>"
+            "<tr><td>Total revenues</td><td>97,690</td><td>96,773</td></tr>"
+            "<tr><td>Total automotive revenues</td><td>77,070</td><td>82,419</td></tr>"
+            "</table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What were total automotive revenues for the year ended December 31, 2024?",
+        Scope(tickers=("TSLA",), years=("2024",), doc_type="10K"),
+    )
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Total automotive revenues", "77,070")
+    ]
+
+
+def test_statement_rows_keep_broad_metric_when_separately_requested(tmp_path) -> None:
+    _parent(
+        tmp_path, "two-revenue-levels", ticker="TSLA", year="2024", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Consolidated Statements of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2024</th><th>2023</th></tr>"
+            "<tr><td>Total revenues</td><td>97,690</td><td>96,773</td></tr>"
+            "<tr><td>Total automotive revenues</td><td>77,070</td><td>82,419</td></tr>"
+            "</table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "Report both total automotive revenues and total company revenues for 2024.",
+        Scope(tickers=("TSLA",), years=("2024",), doc_type="10K"),
+    )
+
+    assert {(row.label, row.value) for row in rows} == {
+        ("Total revenues", "97,690"),
+        ("Total automotive revenues", "77,070"),
+    }
+
+
+def test_operating_income_matches_income_loss_from_operations(tmp_path) -> None:
+    _parent(
+        tmp_path, "operating-income", ticker="TSLA", year="2025", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Consolidated Statements of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2025</th><th>2024</th></tr>"
+            "<tr><td>Income (loss) from operations</td>"
+            "<td>6,625</td><td>7,076</td></tr></table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What was TSLA operating income in 2025?",
+        Scope(tickers=("TSLA",), years=("2025",), doc_type="10K"),
+    )
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Income (loss) from operations", "6,625")
+    ]
+
+
+def test_statement_rows_cover_each_requested_company_group(tmp_path) -> None:
+    for ticker, value in (("MSFT", "281,724"), ("TSLA", "94,827")):
+        _parent(
+            tmp_path, f"{ticker}-revenue", ticker=ticker, year="2025", item="Item 8",
+            section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+            body=(
+                "## Consolidated Statements of Operations\n(in millions)\n"
+                "<table><tr><th>Metric</th><th>2025</th></tr>"
+                f"<tr><td>Total revenues</td><td>{value}</td></tr></table>"
+            ),
+        )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "Compare MSFT and TSLA total revenue in 2025.",
+        Scope(
+            tickers=("MSFT", "TSLA"), years=("2025",), doc_type="10K",
+            requested_groups=(("MSFT", "2025"), ("TSLA", "2025")),
+        ),
+    )
+
+    assert {(row.source["ticker"], row.value) for row in rows} == {
+        ("MSFT", "281,724"), ("TSLA", "94,827")
+    }
+
+
 def test_all_items_come_from_document_metadata_in_order(tmp_path) -> None:
     _parent(
         tmp_path, "late", body="## ITEM 10. DIRECTORS", item="Item 10",

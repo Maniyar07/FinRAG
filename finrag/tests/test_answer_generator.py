@@ -50,6 +50,22 @@ def bundle() -> RetrievalBundle:
 
 
 class AnswerGeneratorTests(unittest.TestCase):
+    def test_verified_rows_accept_plural_scale_without_currency_symbol(self) -> None:
+        source = {"id": "S1"}
+        rows = (
+            VerifiedTableRow(
+                "Total automotive revenues", "2024", "77,070", "millions", source
+            ),
+        )
+
+        error = AnswerGenerator._verified_rows_error(
+            "Total automotive revenues were 77,070 millions [S1].",
+            ("S1",),
+            rows,
+        )
+
+        self.assertIsNone(error)
+
     def test_missing_inline_citations_repair_previous_draft_on_third_attempt(self) -> None:
         draft = "### Cloud growth\n\n- Management discussed capacity growth.\n- Demand grew."
         chain = FakeChain([

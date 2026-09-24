@@ -8,7 +8,7 @@ from src.financial.calculator import (
 )
 from src.financial.fact_extractor import FinancialFactExtractor
 from src.financial.fact_pipeline import FinancialFactPipeline
-from src.financial.fact_validator import FinancialFactValidator
+from src.financial.extracted_fact_validator import ExtractedFactValidator
 from src.financial.models import (
     CandidateFinancialFact,
     FactExtractionPayload,
@@ -33,7 +33,7 @@ __all__ = [
     "FinancialCalculator",
     "FinancialFactExtractor",
     "FinancialFactPipeline",
-    "FinancialFactValidator",
+    "ExtractedFactValidator",
     "FinancialValueNormalizer",
     "NormalizedFinancialValue",
     "RejectedFinancialFact",

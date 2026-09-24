@@ -116,7 +116,7 @@ def _fact_id(candidate: CandidateFinancialFact, source: dict) -> str:
     return "F" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
-class FinancialFactValidator:
+class ExtractedFactValidator:
     """Fail closed unless a candidate can be tied to one retrieved source."""
 
     def __init__(self, normalizer: FinancialValueNormalizer | None = None) -> None:

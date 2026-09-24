@@ -7,7 +7,7 @@ import re
 from bs4 import BeautifulSoup
 
 from src.financial.fact_extractor import FinancialFactExtractor
-from src.financial.fact_validator import FinancialFactValidator
+from src.financial.extracted_fact_validator import ExtractedFactValidator
 from src.financial.models import CandidateFinancialFact, FactValidationResult
 from src.schemas import Scope
 
@@ -19,10 +19,10 @@ class FinancialFactPipeline:
         self,
         *,
         extractor: FinancialFactExtractor | None = None,
-        validator: FinancialFactValidator | None = None,
+        validator: ExtractedFactValidator | None = None,
     ) -> None:
         self.extractor = extractor or FinancialFactExtractor()
-        self.validator = validator or FinancialFactValidator()
+        self.validator = validator or ExtractedFactValidator()
 
     def run(
         self,
@@ -91,7 +91,10 @@ class FinancialFactPipeline:
                     if len(cells) <= column:
                         continue
                     row_label = " ".join(cells[0].get_text(" ", strip=True).split())
-                    if row_label.casefold() not in accepted_labels:
+                    normalized_label = re.sub(
+                        r"\s*\([^)]*\)\s*", " ", row_label
+                    ).strip().casefold()
+                    if normalized_label not in accepted_labels:
                         continue
                     raw = " ".join(cells[column].get_text(" ", strip=True).split())
                     candidates.append(

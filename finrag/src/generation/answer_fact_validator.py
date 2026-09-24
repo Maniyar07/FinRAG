@@ -1,4 +1,4 @@
-"""Conservative cross-checks for values copied from financial tables.
+"""Conservative cross-checks for values copied into generated answers.
 
 Only a unique, unambiguous row/year match can invalidate an answer. If a
 filing's table layout cannot be interpreted, generation continues unchanged.

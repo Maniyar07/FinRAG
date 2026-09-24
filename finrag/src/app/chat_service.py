@@ -8,7 +8,6 @@ from time import perf_counter
 from uuid import uuid4
 
 from src.generation.answer_generator import AnswerGenerator
-from src.financial.models import ValueType
 from src.generation.citations import expand_citations
 from src.generation.narrative_quotes import NarrativeQuoteSelector
 from src.generation.answer_guardrails import (
@@ -19,8 +18,8 @@ from src.generation.answer_guardrails import (
 )
 from src.ingestion.manifest import available_keys, load_manifest
 from src.config import LOGS_DIR, MULTIHOP_ENABLED, get_index_paths
-from src.orchestration.executor import MultiHopExecutionResult, MultiHopExecutor
-from src.orchestration.models import EvidenceType
+from src.app.multihop_coordinator import MultiHopCoordinator
+from src.orchestration.executor import MultiHopExecutor
 from src.orchestration.planner import MultiHopPlanner, should_use_multihop
 from src.retrieval.context_builder import ContextBuilder
 from src.retrieval.clarification_policy import (
@@ -237,160 +236,6 @@ class ChatService:
         )
 
     @staticmethod
-    def _verified_calculation_text(
-        execution: MultiHopExecutionResult, question: str = ""
-    ) -> str | None:
-        """Format only validated facts and deterministic calculations."""
-        if not execution.calculations:
-            return None
-        facts = {fact.fact_id: fact for fact in execution.facts}
-        bundle = getattr(execution, "bundle", None)
-        source_years = {
-            str(source.get("id")): str(source.get("fiscal_year") or "")
-            for source in getattr(bundle, "sources", ())
-        }
-        lines = ["### Calculated results"]
-        for item in execution.calculations:
-            result = item.result
-            inputs = [facts.get(fact_id) for fact_id in result.input_fact_ids]
-            if any(fact is None for fact in inputs):
-                return None
-            input_labels: list[str] = []
-            ratio_input_labels: list[str] = []
-            for fact in inputs:
-                period_candidates = (
-                    str(getattr(fact, "column_label", "") or ""),
-                    str(getattr(fact, "period", "") or ""),
-                    source_years.get(str(fact.source_id), ""),
-                )
-                year = next(
-                    (
-                        match.group(0)
-                        for candidate in period_candidates
-                        if (match := re.search(r"\b(?:19|20)\d{2}\b", candidate))
-                    ),
-                    None,
-                )
-                period = year or next(
-                    (candidate.strip() for candidate in period_candidates if candidate.strip()),
-                    "Period",
-                )
-                raw_value = str(fact.raw_value).strip()
-                if getattr(fact, "value_type", None) == ValueType.CURRENCY:
-                    currency = str(getattr(fact, "currency", "") or "")
-                    scale = str(getattr(fact, "scale", "") or "")
-                    raw_value = re.sub(r"^(?:[$]|USD|EUR|GBP|JPY)\s*", "", raw_value, flags=re.IGNORECASE)
-                    raw_value = " ".join(
-                        part for part in (currency, raw_value, scale.rstrip("s")) if part
-                    )
-                input_labels.append(f"{period}: {raw_value} [{fact.source_id}]")
-                input_metric = str(
-                    getattr(fact, "metric", "")
-                    or getattr(fact, "row_label", "")
-                    or "value"
-                ).lower()
-                ratio_input_labels.append(
-                    f"{input_metric} ({period}): {raw_value} [{fact.source_id}]"
-                )
-            inputs_text = " → ".join(input_labels)
-            citations = "".join(f"[{source_id}]" for source_id in result.source_ids)
-            first_fact = inputs[0]
-            metric = str(
-                getattr(first_fact, "metric", "")
-                or getattr(first_fact, "row_label", "")
-                or item.label
-            )
-            ticker = str(getattr(first_fact, "ticker", "") or "")
-            subject = metric.lower()
-            if ticker and not subject.startswith(ticker.lower() + " "):
-                subject = f"{ticker} {subject}"
-            operation = result.operation.value.replace("_", " ")
-            margin_ratio = (
-                result.result_unit == "ratio"
-                and bool(
-                    re.search(
-                        r"\b(?:margin|percentage|percent)\b",
-                        f"{question} {item.label}",
-                        re.IGNORECASE,
-                    )
-                )
-            )
-            display_value = result.result * 100 if margin_ratio else result.result
-            value = f"{display_value:,.2f}".rstrip("0").rstrip(".")
-            if margin_ratio:
-                inputs_text = "; ".join(ratio_input_labels)
-                subject = f"{ticker} net profit margin".strip()
-                operation = "net profit margin"
-                formatted_result = f"{value}%"
-            elif result.result_unit == "percent":
-                formatted_result = f"{value}%"
-            elif result.result_unit == "currency":
-                scale = str(result.scale or "").rstrip("s")
-                formatted_result = " ".join(
-                    part for part in (result.currency, value, scale) if part
-                )
-            else:
-                unit = str(result.result_unit).replace("_", " ")
-                formatted_result = f"{value} {unit}".strip()
-            lines.append(
-                f"- **{subject}:** {inputs_text}. {operation.capitalize()}: "
-                f"**{formatted_result}** {citations}."
-            )
-        conclusion_requested = bool(
-            re.search(
-                r"\b(?:which|identify|conclusion|performed\s+better|grew\s+more|"
-                r"larger\s+(?:one|increase|change)|higher\s+(?:one|change|growth)|"
-                r"compare\b.{0,80}\bmargins?)\b",
-                question,
-                re.IGNORECASE,
-            )
-        )
-        if len(execution.calculations) == 2 and conclusion_requested:
-            first, second = execution.calculations
-            if (
-                first.result.operation == second.result.operation
-                and first.result.result_unit == second.result.result_unit
-            ):
-                winner = max(
-                    (first, second),
-                    key=lambda item: item.result.result,
-                )
-                first_fact = facts[winner.result.input_fact_ids[0]]
-                all_source_ids = tuple(
-                    dict.fromkeys(
-                        source_id
-                        for calculation in execution.calculations
-                        for source_id in calculation.result.source_ids
-                    )
-                )
-                citations = "".join(f"[{source_id}]" for source_id in all_source_ids)
-                if re.search(r"\bperformed\s+better\b", question, re.IGNORECASE):
-                    conclusion = f"{first_fact.ticker} performed better based on the calculated change."
-                elif re.search(r"\bmargins?\b", question, re.IGNORECASE):
-                    conclusion = f"{first_fact.ticker} had the higher net profit margin."
-                elif re.search(r"\bgrew\s+more\b", question, re.IGNORECASE):
-                    conclusion = f"{first_fact.ticker} grew more."
-                elif re.search(r"\b(?:increase|larger)\b", question, re.IGNORECASE):
-                    conclusion = f"{first_fact.ticker} had the larger increase."
-                else:
-                    conclusion = f"{first_fact.ticker} had the higher calculated change."
-                lines.append(
-                    f"**{conclusion}** {citations}"
-                )
-        return "\n\n".join(lines)
-
-    @classmethod
-    def _verified_calculation_partial(cls, execution: MultiHopExecutionResult) -> str | None:
-        numeric_text = cls._verified_calculation_text(execution)
-        if numeric_text is None:
-            return None
-        answer = numeric_text + "\n\n" + (
-            "I could not validate the requested qualitative explanation with "
-            "claim-level citations, so I have omitted it."
-        )
-        return expand_citations(answer, execution.bundle.sources)
-
-    @staticmethod
     def _retrieval_query(
         question: str, history: list[dict] | None, *, is_followup: bool
     ) -> str:
@@ -418,219 +263,24 @@ class ChatService:
         executor = getattr(self, "multihop_executor", None)
         if planner is None or executor is None:
             raise RuntimeError("Multi-hop orchestration is enabled but not initialized.")
-
-        try:
-            plan = planner.plan(question=question, permitted_scope=scope)
-            trace["multihop"]["plan"] = plan.model_dump(mode="json")
-            execution = executor.execute(
-                plan,
-                permitted_scope=scope,
-                query_expansions=query_expansions,
-            )
-            trace["multihop"]["execution"] = execution.trace
-            trace["multihop"]["issues"] = list(execution.issues)
-        except Exception as error:
-            trace["error_type"] = type(error).__name__
-            trace["error_detail"] = " ".join(str(error).split())[:500]
-            self._record({**trace, "decision": Decision.ERROR.value})
-            return ChatResult(
-                Decision.ERROR,
-                "The multi-step document analysis could not be completed. Please try "
-                "again or ask a narrower comparison question.",
-                scope,
-                inherited_fields=inherited_fields,
-                trace=trace,
-            )
-
-        bundle = execution.bundle
-        trace["retrieval"] = {
-            "tool": self.document_search_tool.name,
-            "mode": "multi_hop",
-            "candidate_count": bundle.candidate_count,
-            "source_ids": [source["id"] for source in bundle.sources],
-            "source_groups": [
-                [source["ticker"], source["fiscal_year"], source["doc_type"]]
-                for source in bundle.sources
-            ],
-            "sources": [
-                self._retrieval_source_trace(source) for source in bundle.sources
-            ],
-        }
-        if not execution.complete:
-            result = ChatResult(
-                Decision.INSUFFICIENT_EVIDENCE,
-                INSUFFICIENT_EVIDENCE_RESPONSE,
-                scope,
-                bundle.sources,
-                inherited_fields,
-                trace,
-            )
-            self._record({**trace, "decision": result.decision.value})
-            return result
-
-        numeric_text = self._verified_calculation_text(execution, question)
-        if numeric_text is not None:
-            narrative_requirements = [
-                item
-                for item in plan.requirements
-                if item.evidence_type == EvidenceType.NARRATIVE
-            ]
-            sections = [numeric_text]
-            missing: list[str] = []
-            quote_ids: list[str] = []
-            quote_texts: list[str] = []
-            selector = getattr(self, "narrative_quote_selector", None)
-            for requirement in narrative_requirements:
-                try:
-                    quotes = (
-                        selector.select(
-                            question=question,
-                            task=requirement.question,
-                            sources=bundle.sources,
-                            requirement_ids={requirement.requirement_id},
-                        )
-                        if selector is not None
-                        else ()
-                    )
-                except Exception as error:
-                    trace["narrative_error_type"] = type(error).__name__
-                    quotes = ()
-                by_group = {(quote.ticker, quote.fiscal_year): quote for quote in quotes}
-                if quotes:
-                    sections.append("Relevant source evidence:")
-                historical_reason = bool(
-                    re.search(r"\b(?:reasons?|drivers?)\b", requirement.question, re.IGNORECASE)
-                )
-                for group in requirement.groups:
-                    quote = by_group.get(group.key)
-                    if quote is None:
-                        missing.append(f"{group.ticker} {group.fiscal_year} {requirement.document_type}")
-                        continue
-                    quote_ids.append(quote.source_id)
-                    quote_texts.append(quote.text)
-                    if quote.factors:
-                        sections.append(
-                            f"{quote.ticker} {quote.fiscal_year} {quote.doc_type} "
-                            f"reconciliation factors:"
-                        )
-                        sections.append(
-                            "\n".join(
-                                f"- {label}: {rate} percentage points [{quote.source_id}]"
-                                for label, rate in quote.factors
-                            )
-                        )
-                    else:
-                        sections.append(
-                            f"- {quote.ticker} {quote.fiscal_year} {quote.doc_type}: "
-                            f"“{quote.text}” [{quote.source_id}]"
-                        )
-                    if historical_reason and not re.search(
-                        r"\b(?:attribut\w*|because|driven by|due to|primarily|reflect\w*)\b",
-                        quote.text,
-                        re.IGNORECASE,
-                    ):
-                        missing.append(
-                            f"direct historical cause for {group.ticker} {group.fiscal_year}"
-                        )
-            if re.search(
-                r"\b(?:directly\s+connect|connection)\b.{0,100}\bchanges?\b",
-                question,
-                re.IGNORECASE,
-            ) and quote_ids:
-                direct_cause = all(
-                    re.search(
-                        r"\b(?:attribut\w*|because|driven by|due to|primarily|reflect\w*)\b",
-                        text,
-                        re.IGNORECASE,
-                    )
-                    for text in quote_texts
-                )
-                connection_citations = "".join(
-                    f"[{source_id}]" for source_id in dict.fromkeys(quote_ids)
-                )
-                if direct_cause:
-                    sections.append(
-                        "The retrieved passages directly attribute the reported changes "
-                        f"to the discussed factors. {connection_citations}"
-                    )
-                else:
-                    sections.append(
-                        "The retrieved risk passages describe possible business or revenue "
-                        "effects, but they do not establish that those risks caused the "
-                        f"calculated historical revenue changes. {connection_citations}"
-                    )
-            if missing:
-                sections.append(
-                    "The requested qualitative evidence could not be verified for: "
-                    + "; ".join(dict.fromkeys(missing))
-                    + ". I have not inferred missing explanations."
-                )
-            answer = expand_citations("\n\n".join(sections), bundle.sources)
-            trace["generation"] = {
-                "mode": "verified_calculations_and_exact_quotes",
-                "quote_source_ids": quote_ids,
-                "missing_narrative": missing,
-            }
-            decision = (
-                Decision.INSUFFICIENT_EVIDENCE if missing else Decision.ANSWERED
-            )
-            result = ChatResult(
-                decision, answer, scope, bundle.sources, inherited_fields, trace
-            )
-            self._record({**trace, "decision": result.decision.value})
-            return result
-
-        try:
-            generation = self.generator.generate_with_trace(
-                question,
-                bundle,
-                history=history,
-                wants_table=wants_table,
-                wants_complete_table=False,
-                fail_closed_on_invalid=True,
-            )
-            answer = generation.answer
-            trace["generation"] = {
-                "attempts": generation.attempts,
-                "validation_reason": generation.validation_reason,
-                "raw_output_previews": list(generation.raw_output_previews),
-            }
-        except Exception as error:
-            trace["error_type"] = type(error).__name__
-            self._record({**trace, "decision": Decision.ERROR.value})
-            return ChatResult(
-                Decision.ERROR,
-                "The answer model could not convert the verified multi-step evidence "
-                "into an answer; please try again.",
-                scope,
-                bundle.sources,
-                inherited_fields,
-                trace,
-            )
-
-        decision = (
-            Decision.VALIDATION_FAILED
-            if answer == UNVERIFIABLE_RESPONSE
-            or generation.validation_reason.startswith("generation_validation_failed:")
-            else Decision.INSUFFICIENT_EVIDENCE if answer == INSUFFICIENT_EVIDENCE_RESPONSE
-            else Decision.ANSWERED
+        coordinator = MultiHopCoordinator(
+            planner=planner,
+            executor=executor,
+            document_search_tool=self.document_search_tool,
+            generator=self.generator,
+            narrative_quote_selector=getattr(self, "narrative_quote_selector", None),
+            record=self._record,
+            retrieval_source_trace=self._retrieval_source_trace,
         )
-        if decision != Decision.ANSWERED:
-            partial = self._verified_calculation_partial(execution)
-            if partial is not None:
-                answer = partial
-                trace["generation"]["verified_calculation_partial"] = True
-        result = ChatResult(
-            decision,
-            answer,
-            scope,
-            bundle.sources,
-            inherited_fields,
-            trace,
+        return coordinator.run(
+            question=question,
+            scope=scope,
+            inherited_fields=inherited_fields,
+            history=history,
+            query_expansions=query_expansions,
+            wants_table=wants_table,
+            trace=trace,
         )
-        self._record({**trace, "decision": result.decision.value})
-        return result
-
     def ask(
         self,
         question: str,

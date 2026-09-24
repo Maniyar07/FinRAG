@@ -143,6 +143,8 @@ class MultiHopPlannerTests(unittest.TestCase):
             item for item in plan.requirements if item.evidence_type.value == "narrative"
         )
         self.assertIn("revenue", narrative.question.casefold())
+        self.assertIn("explain the reasons", narrative.question.casefold())
+        self.assertNotIn("calculate", narrative.question.casefold())
         self.assertEqual(
             {group.key for group in narrative.groups},
             {("MSFT", "2025"), ("TSLA", "2025")},
@@ -276,6 +278,59 @@ class MultiHopPlannerTests(unittest.TestCase):
         narrative = next(item for item in plan.requirements if item.evidence_type.value == "narrative")
         self.assertIn("liquidity risks", narrative.question)
         self.assertNotIn("cash and cash equivalents", narrative.question)
+
+    def test_curly_possessives_do_not_pollute_cash_metric(self) -> None:
+        planner = MultiHopPlanner(chain=FakeChain({}))
+        possessive = chr(0x2019) + "s"
+        scope = Scope(
+            ("MSFT", "TSLA"), ("2024", "2025"), doc_type="10K",
+            requested_groups=(("MSFT", "2024"), ("MSFT", "2025"),
+                              ("TSLA", "2024"), ("TSLA", "2025")),
+        )
+
+        plan = planner.plan(
+            question=(f"Compare Microsoft{possessive} and Tesla{possessive} cash and "
+                      "cash equivalents for 2024 and 2025. Calculate the absolute "
+                      "change from 2024 to 2025."),
+            permitted_scope=scope,
+        )
+
+        numeric = next(item for item in plan.requirements if item.evidence_type.value == "numeric")
+        self.assertIn("cash and cash equivalents", numeric.question.casefold())
+        self.assertNotIn(possessive, numeric.question)
+        self.assertEqual(
+            {reference.metric_hint for item in plan.calculations for reference in item.inputs},
+            {"cash and cash equivalents"},
+        )
+
+    def test_absolute_and_percentage_change_create_both_operations(self) -> None:
+        planner = MultiHopPlanner(chain=FakeChain({}))
+        scope = Scope(
+            ("MSFT", "TSLA"), ("2024", "2025"), doc_type="10K",
+            requested_groups=(("MSFT", "2024"), ("MSFT", "2025"),
+                              ("TSLA", "2024"), ("TSLA", "2025")),
+        )
+
+        plan = planner.plan(
+            question=("Compare MSFT and TSLA research and development expenses for "
+                      "2024 and 2025. Calculate the absolute change and percentage "
+                      "change from 2024 to 2025, and identify which grew faster."),
+            permitted_scope=scope,
+        )
+
+        self.assertEqual(len(plan.calculations), 4)
+        self.assertEqual(
+            [item.operation.value for item in plan.calculations].count("absolute_change"),
+            2,
+        )
+        self.assertEqual(
+            [item.operation.value for item in plan.calculations].count("percentage_change"),
+            2,
+        )
+        self.assertEqual(
+            {reference.metric_hint for item in plan.calculations for reference in item.inputs},
+            {"research and development expenses"},
+        )
 
     def test_planner_drops_a_derived_comparison_search_over_the_bound(self) -> None:
         requirements = []

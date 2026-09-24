@@ -94,6 +94,26 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(result.requested_doc_types, ("TRANSCRIPT",))
         self.assertEqual(result.doc_type, "TRANSCRIPT")
 
+    def test_mixed_calculation_and_commentary_preserves_both_evidence_types(self) -> None:
+        result = understand_query(
+            "Compare Microsoft and Tesla research and development expense for 2024 "
+            "and 2025. Calculate each company's percentage change and summarize "
+            "management commentary from the 2025 transcripts."
+        )
+
+        self.assertEqual(result.years, ("2024", "2025"))
+        self.assertEqual(result.requested_doc_types, ("10K", "TRANSCRIPT"))
+        self.assertIsNone(result.doc_type)
+
+    def test_extracts_generic_sec_form_without_substituting_ten_k(self) -> None:
+        result = understand_query(
+            "Summarize Tesla's 2025 8-K risk filing and its effect on 2024 results."
+        )
+        self.assertEqual(result.years, ("2025",))
+        self.assertEqual(result.reference_years, ("2024",))
+        self.assertEqual(result.requested_doc_types, ("8K",))
+        self.assertEqual(result.doc_type, "8K")
+
 
 class ScopePolicyTests(unittest.TestCase):
     def test_first_ambiguous_question_requests_clarification(self) -> None:
@@ -134,6 +154,18 @@ class ScopePolicyTests(unittest.TestCase):
         )
         self.assertEqual(resolution.decision, Decision.DATA_UNAVAILABLE)
         self.assertIn("TSLA 2025 TRANSCRIPT", resolution.message)
+
+    def test_unsupported_sec_form_is_reported_before_search(self) -> None:
+        resolution = resolve_scope(
+            understand_query("Summarize Tesla's 2025 8-K filing."),
+            available_keys={
+                ("TSLA", "2025", "10K"),
+                ("TSLA", "2025", "TRANSCRIPT"),
+            },
+        )
+        self.assertEqual(resolution.decision, Decision.DATA_UNAVAILABLE)
+        self.assertEqual(resolution.scope.doc_type, "8K")
+        self.assertIn("TSLA 2025 8K", resolution.message)
 
     def test_all_companies_expands_intentionally(self) -> None:
         resolution = resolve_scope(

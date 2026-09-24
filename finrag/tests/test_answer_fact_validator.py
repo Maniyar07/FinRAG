@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.generation.financial_fact_validator import (
+from src.generation.answer_fact_validator import (
     validate_revenue_change,
     validate_table_answer,
 )
@@ -28,7 +28,7 @@ MICROSOFT_SEGMENTS = """
 """
 
 
-class FinancialFactValidatorTests(unittest.TestCase):
+class AnswerFactValidatorTests(unittest.TestCase):
     def test_rejects_adjacent_automotive_total(self) -> None:
         result = validate_table_answer(
             "What were total automotive revenues for 2024?",

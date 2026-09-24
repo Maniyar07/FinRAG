@@ -5,6 +5,10 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from src.app.chat_service import ChatService
+from src.app.response_composer import (
+    verified_calculation_partial,
+    verified_calculation_text,
+)
 from src.generation.answer_guardrails import UNVERIFIABLE_RESPONSE
 from src.generation.narrative_quotes import VerifiedQuote
 from src.financial.models import ValueType
@@ -167,7 +171,7 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
             ),
         )
 
-        answer = ChatService._verified_calculation_text(
+        answer = verified_calculation_text(
             SimpleNamespace(facts=facts, calculations=(calculation,))
         )
 
@@ -200,14 +204,14 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
             ),
         )
 
-        answer = ChatService._verified_calculation_text(
+        answer = verified_calculation_text(
             SimpleNamespace(facts=facts, calculations=(calculation,)),
             "Provide revenue, net income, and calculate net profit margin.",
         )
 
-        self.assertIn("**TSLA net profit margin:**", answer)
-        self.assertIn("net income (2025): USD 3,855 million", answer)
-        self.assertIn("total revenues (2025): USD 94,827 million", answer)
+        self.assertIn("#### TSLA - Net profit margin", answer)
+        self.assertIn("**Net income (2025):** USD 3,855 million", answer)
+        self.assertIn("**Total revenues (2025):** USD 94,827 million", answer)
         self.assertIn("**4.07%**", answer)
         self.assertNotIn("0.04 ratio", answer)
 
@@ -235,12 +239,12 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         )
         execution = SimpleNamespace(facts=facts, calculations=calculations)
 
-        answer = ChatService._verified_calculation_text(
+        answer = verified_calculation_text(
             execution, "Calculate each company's revenue percentage change."
         )
 
-        self.assertIn("**AAA revenue:**", answer)
-        self.assertIn("**BBB revenue:**", answer)
+        self.assertIn("#### AAA - Revenue", answer)
+        self.assertIn("#### BBB - Revenue", answer)
         self.assertIn("**20%**", answer)
         self.assertIn("**-10%**", answer)
         self.assertNotIn("Calculate the percentage change", answer)
@@ -297,6 +301,96 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertIn("Cash commitments may exceed", result.answer)
         self.assertEqual(service.generator.calls, [])
 
+    def test_missing_narrative_keeps_complete_calculations_as_answered(self) -> None:
+        service = _service()
+        scope = Scope(("MSFT",), ("2024", "2025"), "10K")
+        bundle = RetrievalBundle(
+            "context",
+            [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2024", "doc_type": "10K"},
+             {"id": "S2", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
+            scope, 2,
+        )
+        facts = (
+            SimpleNamespace(fact_id="F1", ticker="MSFT", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
+            SimpleNamespace(fact_id="F2", ticker="MSFT", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
+        )
+        calculation = SimpleNamespace(
+            label="MSFT revenue percentage change",
+            result=SimpleNamespace(
+                input_fact_ids=("F1", "F2"), result=Decimal("20"),
+                result_unit="percent", currency=None, scale=None,
+                source_ids=("S1", "S2"), operation=SimpleNamespace(value="percentage_change"),
+            ),
+        )
+        narrative = SimpleNamespace(
+            requirement_id="reason", evidence_type=EvidenceType.NARRATIVE,
+            document_type="TRANSCRIPT", question="explain revenue drivers",
+            groups=(SimpleNamespace(key=("MSFT", "2025"), ticker="MSFT", fiscal_year="2025"),),
+        )
+        plan = SimpleNamespace(
+            requirements=(narrative,), calculations=(object(),), model_dump=lambda **_: {}
+        )
+        service.multihop_planner = SimpleNamespace(plan=lambda **_: plan)
+        service.multihop_executor = SimpleNamespace(execute=lambda *_, **__: SimpleNamespace(
+            bundle=bundle, complete=True, trace={}, issues=(),
+            calculations=(calculation,), facts=facts,
+        ))
+        service.narrative_quote_selector = SimpleNamespace(select=lambda **_: ())
+
+        result = service._run_multihop(
+            question="Calculate revenue growth and explain transcript drivers.",
+            scope=scope, inherited_fields=(), history=None, query_expansions=(),
+            wants_table=False, trace={"multihop": {}},
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertIn("**20%**", result.answer)
+        self.assertIn("### Evidence limitations", result.answer)
+        self.assertIn("no explanation was inferred", result.answer)
+        self.assertEqual(service.generator.calls, [])
+
+    def test_incomplete_execution_preserves_verified_partial_calculation(self) -> None:
+        service = _service()
+        scope = Scope(("MSFT",), ("2024", "2025"), "10K")
+        bundle = RetrievalBundle(
+            "context",
+            [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2024", "doc_type": "10K"},
+             {"id": "S2", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
+            scope, 2,
+        )
+        facts = (
+            SimpleNamespace(fact_id="F1", ticker="MSFT", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
+            SimpleNamespace(fact_id="F2", ticker="MSFT", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
+        )
+        calculation = SimpleNamespace(
+            label="MSFT revenue percentage change",
+            result=SimpleNamespace(
+                input_fact_ids=("F1", "F2"), result=Decimal("20"),
+                result_unit="percent", currency=None, scale=None,
+                source_ids=("S1", "S2"), operation=SimpleNamespace(value="percentage_change"),
+            ),
+        )
+        plan = SimpleNamespace(
+            requirements=(), calculations=(object(), object()), model_dump=lambda **_: {}
+        )
+        service.multihop_planner = SimpleNamespace(plan=lambda **_: plan)
+        service.multihop_executor = SimpleNamespace(execute=lambda *_, **__: SimpleNamespace(
+            bundle=bundle, complete=False, trace={},
+            issues=("TSLA 2025 operating income was not found",),
+            calculations=(calculation,), facts=facts,
+        ))
+
+        result = service._run_multihop(
+            question="Compare both companies' operating-income changes.",
+            scope=scope, inherited_fields=(), history=None, query_expansions=(),
+            wants_table=False, trace={"multihop": {}},
+        )
+
+        self.assertEqual(result.decision, Decision.INSUFFICIENT_EVIDENCE)
+        self.assertIn("**20%**", result.answer)
+        self.assertIn("TSLA 2025 operating income was not found", result.answer)
+        self.assertEqual(service.generator.calls, [])
+
     def test_verified_calculation_partial_keeps_numbers_but_omits_unchecked_prose(self) -> None:
         facts = (
             SimpleNamespace(fact_id="F1", period="2024", raw_value="100", source_id="S1"),
@@ -327,13 +421,13 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
                 2,
             ),
         )
-        answer = ChatService._verified_calculation_partial(execution)
+        answer = verified_calculation_partial(execution)
         self.assertIn("20%", answer)
-        self.assertIn("2024: 100", answer)
-        self.assertIn("2025: 120", answer)
-        self.assertIn("could not validate", answer)
+        self.assertIn("**2024:** 100", answer)
+        self.assertIn("**2025:** 120", answer)
+        self.assertIn("Evidence limitations", answer)
 
-    def test_comparison_conclusion_uses_all_input_sources(self) -> None:
+    def test_comparison_conclusion_does_not_repeat_input_citations(self) -> None:
         facts = (
             SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
             SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
@@ -356,7 +450,7 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
             )
         )
 
-        answer = ChatService._verified_calculation_text(
+        answer = verified_calculation_text(
             SimpleNamespace(facts=facts, calculations=calculations),
             "Identify which company performed better.",
         )
@@ -364,7 +458,41 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertIn("AAA performed better", answer)
         conclusion = answer.splitlines()[-1]
         for source_id in ("S1", "S2", "S3", "S4"):
-            self.assertIn(f"[{source_id}]", conclusion)
+            self.assertIn(f"[{source_id}]", answer)
+            self.assertNotIn(f"[{source_id}]", conclusion)
+
+    def test_absolute_and_percentage_changes_share_one_evidence_block(self) -> None:
+        facts = (
+            SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
+            SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
+        )
+        calculations = tuple(
+            SimpleNamespace(
+                label=f"AAA revenue {operation.replace('_', ' ')}",
+                result=SimpleNamespace(
+                    input_fact_ids=("F1", "F2"), result=Decimal(value),
+                    result_unit=unit, currency="USD" if unit == "currency" else None,
+                    scale="millions" if unit == "currency" else None,
+                    source_ids=("S1", "S2"),
+                    operation=SimpleNamespace(value=operation),
+                ),
+            )
+            for operation, value, unit in (
+                ("absolute_change", "20", "currency"),
+                ("percentage_change", "20", "percent"),
+            )
+        )
+
+        answer = verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=calculations),
+            "Calculate the absolute and percentage change in revenue.",
+        )
+
+        self.assertEqual(answer.count("#### AAA - Revenue"), 1)
+        self.assertEqual(answer.count("**2024:** 100 [S1]"), 1)
+        self.assertEqual(answer.count("**2025:** 120 [S2]"), 1)
+        self.assertIn("**Absolute change:** **USD 20 million**", answer)
+        self.assertIn("**Percentage change:** **20%**", answer)
 
     def test_compound_comparison_uses_enabled_multihop_path(self) -> None:
         service = _service()
@@ -529,6 +657,16 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertEqual(result.decision, Decision.OUT_OF_SCOPE)
         self.assertEqual(parser.calls, 1)
         self.assertEqual(service.retriever.calls, [])
+
+    def test_explicit_unavailable_sec_form_stops_before_retrieval(self) -> None:
+        service = _service()
+
+        result = service.ask("Summarize Tesla's 2025 8-K filing.")
+
+        self.assertEqual(result.decision, Decision.DATA_UNAVAILABLE)
+        self.assertEqual(result.scope.doc_type, "8K")
+        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(service.generator.calls, [])
 
     def test_suspicious_comparison_fails_closed_when_parser_fails(self) -> None:
         parser = FakeSemanticParser(error=TimeoutError("semantic timeout"))

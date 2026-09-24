@@ -29,7 +29,10 @@ def source(source_id: str, text: str, ticker: str = "MSFT") -> dict:
 
 class NarrativeQuoteSelectorTests(unittest.TestCase):
     def test_accepts_only_exact_passage_from_correct_source(self) -> None:
-        passage = "Revenue increased because demand for cloud services grew during the year."
+        passage = (
+            "Total company revenue increased because demand for cloud services "
+            "grew during the year."
+        )
         selector = NarrativeQuoteSelector(chain=FakeChain({
             "quotes": [
                 {"source_id": "S1", "quote": passage},
@@ -60,7 +63,10 @@ class NarrativeQuoteSelectorTests(unittest.TestCase):
         self.assertEqual(quotes, ())
 
     def test_segment_revenue_fact_is_not_a_reason_for_total_revenue_change(self) -> None:
-        passage = "Energy revenue increased 26.6% year over year across all regions."
+        passage = (
+            "Energy revenue increased 26.6% year over year, driven by deployments "
+            "across all regions."
+        )
         selector = NarrativeQuoteSelector(chain=FakeChain({
             "quotes": [{"source_id": "S1", "quote": passage}]
         }))
@@ -163,6 +169,53 @@ class NarrativeQuoteSelectorTests(unittest.TestCase):
 
         self.assertEqual(len(quotes), 1)
         self.assertEqual(quotes[0].text, passage)
+
+    def test_multiword_driver_topic_has_safe_exact_fallback(self) -> None:
+        passage = (
+            "Operating income increased 17% year over year, primarily reflecting "
+            "revenue growth and disciplined operating expense management."
+        )
+        selector = NarrativeQuoteSelector(chain=FakeChain({"quotes": []}))
+
+        quotes = selector.select(
+            question="Explain the operating income drivers.",
+            task="operating income: explain the main drivers discussed by management",
+            sources=[source("S1", passage)],
+            requirement_ids={"drivers"},
+        )
+
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(quotes[0].text, passage)
+
+    def test_company_wide_revenue_reason_has_safe_exact_fallback(self) -> None:
+        passage = (
+            "This year, we delivered over $281 billion in revenue, up 15% "
+            "year-over-year which reflects the broad strength of our products and services."
+        )
+        selector = NarrativeQuoteSelector(chain=FakeChain({"quotes": []}))
+
+        quotes = selector.select(
+            question="Explain the reasons for the annual revenue change.",
+            task="revenue: explain the reasons management gave",
+            sources=[source("S1", passage)],
+            requirement_ids={"drivers"},
+        )
+
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(quotes[0].text, passage)
+
+    def test_segment_revenue_reason_is_not_promoted_to_company_total(self) -> None:
+        passage = "Azure revenue grew 39%, driven by accelerated infrastructure demand."
+        selector = NarrativeQuoteSelector(chain=FakeChain({"quotes": []}))
+
+        quotes = selector.select(
+            question="Explain the reasons for the total revenue change.",
+            task="revenue: explain the reasons management gave",
+            sources=[source("S1", passage)],
+            requirement_ids={"drivers"},
+        )
+
+        self.assertEqual(quotes, ())
 
     def test_liquidity_requires_an_adverse_risk_not_just_a_covenant_fact(self) -> None:
         passage = "Under certain circumstances we are required to maintain liquidity."

@@ -1,7 +1,13 @@
 .env
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
+**/.env
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+finrag/.streamlit/
+finrag/artifacts/
+finrag/data/indexes/
 finrag/Data/indexes/
+finrag/data/logs/
 finrag/Data/logs/
+finrag/evals/results/

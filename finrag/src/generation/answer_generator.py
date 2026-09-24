@@ -15,7 +15,7 @@ from src.generation.answer_guardrails import (
     validate_answer_payload,
 )
 from src.generation.citations import expand_citations, strip_citations
-from src.generation.financial_fact_validator import (
+from src.generation.answer_fact_validator import (
     validate_revenue_change,
     validate_table_answer,
 )
@@ -24,8 +24,8 @@ from src.retrieval.structured_lookup import VerifiedTableRow
 
 
 MONEY_CLAIM_RE = re.compile(
-    r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand)?\b|"
-    r"\b(\d[\d,]*(?:\.\d+)?)\s+(billion|million|thousand)\b",
+    r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(billions?|millions?|thousands?)?\b|"
+    r"\b(\d[\d,]*(?:\.\d+)?)\s+(billions?|millions?|thousands?)\b",
     re.IGNORECASE,
 )
 
@@ -110,7 +110,7 @@ class AnswerGenerator:
         claims = []
         for match in MONEY_CLAIM_RE.finditer(answer):
             raw = match.group(1) or match.group(3)
-            scale = (match.group(2) or match.group(4) or "million").lower()
+            scale = (match.group(2) or match.group(4) or "million").lower().rstrip("s")
             value = Decimal(raw.replace(",", "")) * factors[scale]
             decimals = len(raw.partition(".")[2])
             tolerance = (
