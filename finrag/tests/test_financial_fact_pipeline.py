@@ -213,7 +213,10 @@ class FinancialFactPipelineTests(unittest.TestCase):
             "full_evidence_text": table,
         }
 
-        result = FinancialFactPipeline().recover_exact_table_row(
+        pipeline = FinancialFactPipeline(
+            extractor=FinancialFactExtractor(chain=FakeChain({"facts": []}))
+        )
+        result = pipeline.recover_exact_table_row(
             metric_hint="Revenue",
             period_year="2025",
             sources=[evidence],
@@ -223,6 +226,35 @@ class FinancialFactPipelineTests(unittest.TestCase):
         self.assertEqual(len(result.valid_facts), 1)
         self.assertEqual(result.valid_facts[0].numeric_value, 281724)
         self.assertEqual(result.valid_facts[0].row_label, "Total revenue")
+
+    def test_exact_row_recovery_accepts_plural_label_and_statement_currency(self) -> None:
+        table = (
+            "## CASH FLOWS STATEMENTS\n(In millions)\n"
+            "<table><tr><th>Year</th><th>2025</th></tr>"
+            "<tr><td>Total revenues</td><td>94,827</td></tr></table>"
+        )
+        evidence = {
+            **source(),
+            "ticker": "TSLA",
+            "fiscal_year": "2025",
+            "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+            "evidence_text": table,
+            "full_evidence_text": table,
+        }
+
+        pipeline = FinancialFactPipeline(
+            extractor=FinancialFactExtractor(chain=FakeChain({"facts": []}))
+        )
+        result = pipeline.recover_exact_table_row(
+            metric_hint="total revenue",
+            period_year="2025",
+            sources=[evidence],
+            permitted_scope=Scope(("TSLA",), ("2025",), "10K"),
+        )
+
+        self.assertEqual(len(result.valid_facts), 1)
+        self.assertEqual(result.valid_facts[0].row_label, "Total revenues")
+        self.assertEqual(result.valid_facts[0].currency, "USD")
 
 
 if __name__ == "__main__":

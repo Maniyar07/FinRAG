@@ -185,6 +185,18 @@ def evaluate_result(case: dict, result: ChatResult, elapsed_seconds: float) -> d
 
     retrieval = trace.get("retrieval") or {}
     scored_sources = sum(source.get("rerank_score") is not None for source in retrieval.get("sources", []))
+    source_ids = [str(source.get("id") or "") for source in result.sources]
+    cited_ids = list(dict.fromkeys(re.findall(r"\[(S\d+)\]", result.answer)))
+    invalid_citations = [source_id for source_id in cited_ids if source_id not in source_ids]
+    requirement_modes = [
+        str(requirement.get("retrieval_mode") or "unknown")
+        for requirement in _execution(trace).get("requirements", [])
+    ]
+    retrieval_modes = requirement_modes
+    if not retrieval_modes and retrieval.get("mode"):
+        retrieval_modes = [str(retrieval["mode"])]
+    if not retrieval_modes:
+        retrieval_modes = ["hybrid" if "candidate_count" in retrieval else "none"]
     return {
         "id": case["id"],
         "category": case.get("category"),
@@ -203,6 +215,14 @@ def evaluate_result(case: dict, result: ChatResult, elapsed_seconds: float) -> d
             "facts": facts,
             "calculations": calculations,
             "source_groups": [list(group) for group in sorted(source_groups)],
+            "source_count": len(result.sources),
+            "source_ids": source_ids,
+            "citation_ids": cited_ids,
+            "invalid_citation_ids": invalid_citations,
+            "citation_source_utilization_pct": round(
+                100 * len(set(cited_ids) & set(source_ids)) / len(source_ids), 2
+            ) if source_ids else 0.0,
+            "retrieval_modes": retrieval_modes,
             "generation": trace.get("generation"),
             "reranker": {
                 "configured": bool((trace.get("reranker") or {}).get("configured")),

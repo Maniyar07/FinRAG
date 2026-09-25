@@ -95,6 +95,46 @@ def _missing_groups(
     )
 
 
+def _complete_fact_groups(
+    facts: tuple[ValidatedFinancialFact, ...],
+    source_map: dict[str, dict],
+    references: tuple[FactReference, ...],
+) -> set[tuple[str, str]]:
+    """Return groups with one unambiguous value, preferring exact statement rows."""
+    facts_by_group: dict[tuple[str, str], list[ValidatedFinancialFact]] = {}
+    for fact in facts:
+        group_key = (
+            fact.ticker,
+            str(source_map.get(fact.source_id, {}).get("fiscal_year")),
+        )
+        group_references = [
+            reference
+            for reference in references
+            if (reference.ticker, reference.fiscal_year) == group_key
+        ]
+        if group_references and not any(
+            _fact_matches_period(
+                fact,
+                reference.period or reference.fiscal_year,
+                allow_unknown=False,
+            )
+            for reference in group_references
+        ):
+            continue
+        facts_by_group.setdefault(group_key, []).append(fact)
+
+    complete: set[tuple[str, str]] = set()
+    for group_key, group_facts in facts_by_group.items():
+        exact = [
+            fact for fact in group_facts
+            if "exact_table_row" in fact.validation_checks
+        ]
+        values = {fact.base_value for fact in (exact or group_facts)}
+        if len(values) == 1:
+            complete.add(group_key)
+    return complete
+
+
 class MultiHopExecutor:
     """Run planned searches directly; no graph engine or generic tool registry."""
 
@@ -375,35 +415,13 @@ class MultiHopExecutor:
                         valid_map.pop(fact.fact_id, None)
 
                 def fact_group_keys() -> set[tuple[str, str]]:
-                    values_by_group: dict[tuple[str, str], set[Decimal]] = {}
-                    references = references_by_requirement.get(
-                        requirement.requirement_id, ()
+                    return _complete_fact_groups(
+                        tuple(valid_map.values()),
+                        source_map,
+                        references_by_requirement.get(
+                            requirement.requirement_id, ()
+                        ),
                     )
-                    for fact in valid_map.values():
-                        group_key = (
-                            fact.ticker,
-                            str(source_map.get(fact.source_id, {}).get("fiscal_year")),
-                        )
-                        group_references = [
-                            reference
-                            for reference in references
-                            if (reference.ticker, reference.fiscal_year) == group_key
-                        ]
-                        if not group_references or any(
-                            _fact_matches_period(
-                                fact,
-                                reference.period or reference.fiscal_year,
-                                allow_unknown=False,
-                            )
-                            for reference in group_references
-                        ):
-                            values_by_group.setdefault(group_key, set()).add(
-                                fact.base_value
-                            )
-                    return {
-                        group_key for group_key, values in values_by_group.items()
-                        if len(values) == 1
-                    }
 
                 # A model can omit one row when many groups share a context.
                 # Retry only the missing group against its already-retrieved

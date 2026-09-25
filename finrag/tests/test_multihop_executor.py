@@ -6,7 +6,12 @@ from decimal import Decimal
 
 from src.financial.models import FactValidationResult, ValidatedFinancialFact, ValueType
 from src.financial.fact_pipeline import FinancialFactPipeline
-from src.orchestration.executor import MultiHopExecutor, _focused_numeric_sources, _select_fact
+from src.orchestration.executor import (
+    MultiHopExecutor,
+    _complete_fact_groups,
+    _focused_numeric_sources,
+    _select_fact,
+)
 from src.orchestration.models import (
     EvidenceGroup,
     EvidenceRequirement,
@@ -159,6 +164,90 @@ def test_complete_structured_inputs_bypass_multihop_document_search(tmp_path) ->
     assert result.bundle.candidate_count == 0
     assert result.trace["requirements"][0]["retrieval_mode"] == "structured_statement"
     assert result.calculations[0].result.result == Decimal("-2863")
+
+
+def test_net_margin_uses_complete_verified_statement_rows_without_search(tmp_path) -> None:
+    statements = (
+        ("MSFT", "income", "INCOME STATEMENTS", "Total revenue", "281,724"),
+        ("MSFT", "cash", "CASH FLOWS STATEMENTS", "Net income", "101,832"),
+        ("TSLA", "income", "STATEMENTS OF OPERATIONS", "Total revenues", "$94,827"),
+        ("TSLA", "comprehensive", "STATEMENTS OF COMPREHENSIVE INCOME", "Net income", "$3,855"),
+    )
+    for ticker, name, heading, metric, value in statements:
+        (tmp_path / f"{ticker}-{name}.json").write_text(json.dumps({
+            "page_content": (
+                f"## {heading}\n(In millions)\n"
+                f"<table><tr><th>Metric</th><th>2025</th></tr>"
+                f"<tr><td>{metric}</td><td>{value}</td></tr></table>"
+            ),
+            "metadata": {
+                "ticker": ticker, "fiscal_year": "2025", "doc_type": "10K",
+                "item": "Item 8",
+                "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+                "source": f"{ticker}_2025_10K.pdf", "pdf_page_start": 50,
+            },
+        }), encoding="utf-8")
+
+    groups = tuple(
+        EvidenceGroup(ticker=ticker, fiscal_year="2025")
+        for ticker in ("MSFT", "TSLA")
+    )
+    requirements = tuple(
+        EvidenceRequirement(
+            requirement_id=requirement_id,
+            question=f"Find the exact {metric} statement row.",
+            evidence_type="numeric", document_type="10K", groups=groups,
+        )
+        for requirement_id, metric in (
+            ("reported_revenue", "total revenue"),
+            ("reported_net_income", "net income"),
+        )
+    )
+    calculations = tuple(
+        PlannedCalculation(
+            calculation_id=f"{ticker.casefold()}_margin",
+            label=f"{ticker} 2025 net profit margin", operation="ratio",
+            inputs=(
+                FactReference(
+                    requirement_id="reported_net_income", ticker=ticker,
+                    fiscal_year="2025", metric_hint="net income",
+                ),
+                FactReference(
+                    requirement_id="reported_revenue", ticker=ticker,
+                    fiscal_year="2025", metric_hint="total revenue",
+                ),
+            ),
+        )
+        for ticker in ("MSFT", "TSLA")
+    )
+    search = FakeDocumentSearch()
+    executor = MultiHopExecutor(
+        document_search=search,
+        fact_pipeline=FinancialFactPipeline(extractor=EmptyExtractor()),
+        statement_lookup=StructuredDocumentLookup(tmp_path),
+    )
+
+    result = executor.execute(
+        MultiHopPlan(
+            original_question="Compare 2025 net margins.",
+            requirements=requirements, calculations=calculations,
+        ),
+        permitted_scope=Scope(
+            ("MSFT", "TSLA"), ("2025",), "10K",
+            requested_groups=(("MSFT", "2025"), ("TSLA", "2025")),
+        ),
+    )
+
+    assert result.complete
+    assert search.calls == []
+    assert result.bundle.candidate_count == 0
+    assert {entry["retrieval_mode"] for entry in result.trace["requirements"]} == {
+        "structured_statement"
+    }
+    assert [item.result.result for item in result.calculations] == [
+        Decimal("101832") / Decimal("281724"),
+        Decimal("3855") / Decimal("94827"),
+    ]
 
 
 class MissingInitialGroupSearch(FakeDocumentSearch):
@@ -314,6 +403,32 @@ def plan() -> MultiHopPlan:
 
 
 class MultiHopExecutorTests(unittest.TestCase):
+    def test_exact_statement_fact_resolves_conflicting_extracted_group(self) -> None:
+        source = {"id": "S1", "ticker": "TSLA", "fiscal_year": "2025"}
+        base = FakeFactPipeline().run(
+            question="operating income", sources=[source],
+            permitted_scope=Scope(("TSLA",), ("2025",), "10K"),
+        ).valid_facts[0]
+        wrong = base.model_copy(update={
+            "fact_id": "F-wrong", "numeric_value": Decimal("3855"),
+            "base_value": Decimal("3855000000"),
+        })
+        exact = base.model_copy(update={
+            "fact_id": "F-exact", "numeric_value": Decimal("4355"),
+            "base_value": Decimal("4355000000"),
+            "validation_checks": (*base.validation_checks, "exact_table_row"),
+        })
+        reference = FactReference(
+            requirement_id="operating_income", ticker="TSLA",
+            fiscal_year="2025",
+        )
+
+        groups = _complete_fact_groups(
+            (wrong, exact), {"S1": source}, (reference,)
+        )
+
+        self.assertEqual(groups, {("TSLA", "2025")})
+
     def test_calculation_rejects_one_fact_bound_to_both_operands(self) -> None:
         source = {"id": "S1", "ticker": "MSFT", "fiscal_year": "2025"}
         fact = FakeFactPipeline().run(

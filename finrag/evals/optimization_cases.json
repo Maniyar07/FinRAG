@@ -1,0 +1,99 @@
+[
+  {
+    "id": "OPT_NET_MARGIN_2025",
+    "category": "structured_multi_metric",
+    "question": "Using Microsoft's and Tesla's 2025 10-K filings, calculate each company's net profit margin using net income divided by total revenue, and identify which company had the higher margin.",
+    "expected": {
+      "decision": "answered",
+      "multihop": true,
+      "source_groups": [["MSFT", "2025", "10K"], ["TSLA", "2025", "10K"]],
+      "facts": [
+        {"ticker": "MSFT", "metric_contains": "net income", "raw_value": "101,832"},
+        {"ticker": "MSFT", "metric_contains": "revenue", "raw_value": "281,724"},
+        {"ticker": "TSLA", "metric_contains": "net income", "raw_value": "3,855"},
+        {"ticker": "TSLA", "metric_contains": "revenue", "raw_value": "94,827"}
+      ],
+      "calculations": [
+        {"ticker": "MSFT", "operation": "ratio", "result": "0.361460", "tolerance": "0.000001", "status": "completed"},
+        {"ticker": "TSLA", "operation": "ratio", "result": "0.040653", "tolerance": "0.000001", "status": "completed"}
+      ],
+      "no_issues": true
+    }
+  },
+  {
+    "id": "OPT_REVENUE_GROWTH_2024_2025",
+    "category": "structured_comparison",
+    "question": "Compare Microsoft and Tesla total revenue from fiscal 2024 to 2025 using their 10-K filings. Calculate each company's absolute and percentage change and identify which company performed better.",
+    "expected": {
+      "decision": "answered",
+      "multihop": true,
+      "source_groups": [["MSFT", "2024", "10K"], ["MSFT", "2025", "10K"], ["TSLA", "2024", "10K"], ["TSLA", "2025", "10K"]],
+      "facts": [
+        {"ticker": "MSFT", "period": "2024", "metric_contains": "revenue", "raw_value": "245,122"},
+        {"ticker": "MSFT", "period": "2025", "metric_contains": "revenue", "raw_value": "281,724"},
+        {"ticker": "TSLA", "period": "2024", "metric_contains": "revenue", "raw_value": "97,690"},
+        {"ticker": "TSLA", "period": "2025", "metric_contains": "revenue", "raw_value": "94,827"}
+      ],
+      "no_issues": true
+    }
+  },
+  {
+    "id": "OPT_RND_CHANGE",
+    "category": "structured_multi_metric",
+    "question": "Compare Microsoft's and Tesla's research and development expenses for fiscal 2024 and 2025. Calculate each company's absolute and percentage change, then identify which company's R&D spending grew faster.",
+    "expected": {
+      "decision": "answered",
+      "multihop": true,
+      "facts": [
+        {"ticker": "MSFT", "metric_contains": "research and development", "raw_value": "29,510"},
+        {"ticker": "MSFT", "metric_contains": "research and development", "raw_value": "32,488"},
+        {"ticker": "TSLA", "metric_contains": "research and development", "raw_value": "4,540"},
+        {"ticker": "TSLA", "metric_contains": "research and development", "raw_value": "6,411"}
+      ],
+      "answer_contains": ["TSLA grew faster"],
+      "no_issues": true
+    }
+  },
+  {
+    "id": "REG_MSFT_REVENUE_2025",
+    "category": "simple_structured",
+    "question": "What was Microsoft's total revenue in its 2025 10-K? Preserve the reported units.",
+    "expected": {"decision": "answered", "multihop": false, "answer_contains": ["281,724"]}
+  },
+  {
+    "id": "REG_TSLA_NET_INCOME_2025",
+    "category": "simple_structured",
+    "question": "What net income did Tesla report in its 2025 10-K? Preserve the reported units.",
+    "expected": {"decision": "answered", "multihop": false, "answer_contains": ["3,855"]}
+  },
+  {
+    "id": "REG_COMPLETE_BALANCE_SHEET",
+    "category": "complete_table",
+    "question": "Show the complete balance sheet table from Microsoft's 2025 10-K.",
+    "expected": {"decision": "answered", "multihop": false, "answer_contains": ["balance sheets", "total assets", "619,003"]}
+  },
+  {
+    "id": "REG_TSLA_MDA",
+    "category": "hybrid_narrative",
+    "question": "According to Tesla's 2025 10-K MD&A, what factors affected automotive revenue and profitability?",
+    "expected": {"decision": "answered", "multihop": false, "source_groups": [["TSLA", "2025", "10K"]]}
+  },
+  {
+    "id": "REG_MSFT_TRANSCRIPT",
+    "category": "hybrid_transcript",
+    "question": "What did Microsoft management say about cloud and AI demand in its 2025 earnings transcript?",
+    "expected": {"decision": "answered", "multihop": false, "source_groups": [["MSFT", "2025", "TRANSCRIPT"]]}
+  },
+  {
+    "id": "REG_MIXED_REVENUE_TRANSCRIPTS",
+    "category": "mixed_multihop",
+    "question": "Compare MSFT and TSLA total revenue from 2024 to 2025 using their 10-Ks, calculate each company's percentage change, identify which performed better, and explain the changes using their 2025 transcripts.",
+    "expected": {"decision": "answered", "multihop": true, "no_issues": true}
+  },
+  {
+    "id": "REG_MISSING_COMPANY",
+    "category": "safe_failure",
+    "question": "What revenue did Apple report in its 2025 10-K?",
+    "expected": {"decision": ["data_unavailable", "out_of_scope"], "multihop": false}
+  }
+]

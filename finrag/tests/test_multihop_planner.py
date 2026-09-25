@@ -355,6 +355,40 @@ class MultiHopPlannerTests(unittest.TestCase):
             {"research and development expenses"},
         )
 
+    def test_valid_model_plan_completes_both_requested_change_operations(self) -> None:
+        payload = {
+            "requirements": [{
+                **requirement(),
+                "groups": [
+                    {"ticker": "MSFT", "fiscal_year": "2024"},
+                    {"ticker": "MSFT", "fiscal_year": "2025"},
+                ],
+            }],
+            "calculations": [{
+                "calculation_id": "research_change",
+                "label": "Research absolute and percentage change",
+                "operation": "absolute_change",
+                "inputs": [
+                    {"requirement_id": "revenue", "ticker": "MSFT", "fiscal_year": "2024"},
+                    {"requirement_id": "revenue", "ticker": "MSFT", "fiscal_year": "2025"},
+                ],
+            }],
+        }
+
+        parsed = MultiHopPlanner._parse_payload(
+            payload,
+            question="Calculate both absolute and percentage changes.",
+        )
+
+        self.assertEqual(
+            {item.operation.value for item in parsed.calculations},
+            {"absolute_change", "percentage_change"},
+        )
+        self.assertEqual(
+            {item.inputs for item in parsed.calculations},
+            {parsed.calculations[0].inputs},
+        )
+
     def test_planner_drops_a_derived_comparison_search_over_the_bound(self) -> None:
         requirements = []
         for index in range(4):

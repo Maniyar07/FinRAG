@@ -39,6 +39,72 @@ COMPANY_TERMS = tuple(
 )
 
 
+def _complete_requested_change_operations(
+    payload: PlanPayload, *, question: str
+) -> PlanPayload:
+    """Complete explicitly requested change operations using existing inputs."""
+    lowered = question.casefold()
+    if not re.search(r"\bchanges?\b", lowered):
+        return payload
+    requested = tuple(
+        operation
+        for pattern, operation in (
+            (r"\babsolute\b", CalculationOperation.ABSOLUTE_CHANGE),
+            (r"\b(?:percentage|percent)\b", CalculationOperation.PERCENTAGE_CHANGE),
+        )
+        if re.search(pattern, lowered)
+    )
+    if len(requested) < 2:
+        return payload
+
+    calculations = list(payload.calculations)
+    existing = {(item.inputs, item.operation) for item in calculations}
+    used_ids = {item.calculation_id for item in calculations}
+    change_operations = {
+        CalculationOperation.ABSOLUTE_CHANGE,
+        CalculationOperation.PERCENTAGE_CHANGE,
+    }
+    for template in tuple(calculations):
+        if template.operation not in change_operations:
+            continue
+        for operation in requested:
+            if (template.inputs, operation) in existing:
+                continue
+            base_id = _safe_identifier(
+                f"{template.calculation_id}_{operation.value}",
+                fallback=operation.value,
+            )
+            calculation_id = base_id
+            suffix = 2
+            while calculation_id in used_ids:
+                tail = f"_{suffix}"
+                calculation_id = f"{base_id[:64 - len(tail)]}{tail}"
+                suffix += 1
+            label = re.sub(
+                r"\b(?:absolute\s+and\s+percentage|percentage\s+and\s+absolute|"
+                r"absolute|percentage|percent)\s+changes?\b",
+                operation.value.replace("_", " "),
+                template.label,
+                flags=re.IGNORECASE,
+            )
+            if label == template.label:
+                label = f"{template.label.rstrip('.')} {operation.value.replace('_', ' ')}"
+            calculations.append(
+                template.model_copy(
+                    update={
+                        "calculation_id": calculation_id,
+                        "label": label[:300],
+                        "operation": operation,
+                    }
+                )
+            )
+            existing.add((template.inputs, operation))
+            used_ids.add(calculation_id)
+    if len(calculations) > MULTIHOP_MAX_CALCULATIONS:
+        raise ValueError("Requested calculations exceed the configured limit.")
+    return payload.model_copy(update={"calculations": calculations})
+
+
 def _safe_identifier(value: object, *, fallback: str) -> str:
     """Normalize harmless model casing/punctuation without changing plan meaning."""
     cleaned = re.sub(r"[^a-z0-9]+", "_", str(value or "").casefold()).strip("_")
@@ -109,13 +175,13 @@ class PlanPayload(BaseModel):
 def parse_plan_payload(payload: Any, *, question: str) -> PlanPayload:
     """Validate raw tool arguments while dropping only non-calculation noise."""
     if isinstance(payload, PlanPayload):
-        return payload
+        return _complete_requested_change_operations(payload, question=question)
 
     raw_payload = payload
     if isinstance(payload, dict) and "parsed" in payload and "raw" in payload:
         parsed = payload.get("parsed")
         if isinstance(parsed, PlanPayload):
-            return parsed
+            return _complete_requested_change_operations(parsed, question=question)
         raw_message = payload.get("raw")
         tool_calls = getattr(raw_message, "tool_calls", None) or []
         if tool_calls:
@@ -124,7 +190,10 @@ def parse_plan_payload(payload: Any, *, question: str) -> PlanPayload:
     if not isinstance(raw_payload, dict):
         raise TypeError("Multi-hop planner returned an unsupported payload.")
     try:
-        return PlanPayload.model_validate(raw_payload)
+        parsed_payload = PlanPayload.model_validate(raw_payload)
+        return _complete_requested_change_operations(
+            parsed_payload, question=question
+        )
     except Exception as original_error:
         raw_requirements = raw_payload.get("requirements")
         if not isinstance(raw_requirements, list) or not raw_requirements:
@@ -262,7 +331,10 @@ def parse_plan_payload(payload: Any, *, question: str) -> PlanPayload:
             ]
         if len(requirements) > MULTIHOP_MAX_SEARCHES:
             raise original_error
-        return PlanPayload(
+        parsed_payload = PlanPayload(
             requirements=requirements,
             calculations=calculations,
+        )
+        return _complete_requested_change_operations(
+            parsed_payload, question=question
         )

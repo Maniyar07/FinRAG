@@ -12,6 +12,25 @@ from src.financial.models import CandidateFinancialFact, FactValidationResult
 from src.schemas import Scope
 
 
+MONETARY_STATEMENT_RE = re.compile(
+    r"(?:income statements?|statements? of (?:operations|cash flows?|"
+    r"comprehensive income)|cash flows? statements?|balance sheets?)",
+    re.IGNORECASE,
+)
+
+
+def _metric_label(value: str) -> str:
+    """Normalize harmless row-label grammar without broadening the metric."""
+    value = re.sub(r"\s*\([^)]*\)\s*", " ", value).casefold()
+    words = re.findall(r"[a-z0-9]+", value)
+    return " ".join(
+        word[:-1]
+        if len(word) > 4 and word.endswith("s") and not word.endswith("ss")
+        else word
+        for word in words
+    )
+
+
 class FinancialFactPipeline:
     """Produce validated facts from retrieved evidence without doing calculations."""
 
@@ -48,10 +67,10 @@ class FinancialFactPipeline:
     ) -> FactValidationResult:
         """Read a simple, unambiguous HTML row when model extraction omitted it."""
         label = re.sub(r"\s+expenses?$", "", metric_hint, flags=re.IGNORECASE)
-        expected = " ".join(label.casefold().split())
+        expected = _metric_label(label)
         aliases = {
-            "revenue": {"total revenue", "total revenues"},
-            "operating income": {"operating income", "income from operations"},
+            "revenue": {"total revenue"},
+            "operating income": {"operating income", "income from operation"},
         }
         accepted_labels = aliases.get(expected, {expected})
         candidates: list[CandidateFinancialFact] = []
@@ -84,16 +103,17 @@ class FinancialFactPipeline:
                     f"{heading} {table_text}",
                     re.IGNORECASE,
                 )
-                if scale_match is None or "$" not in table_text:
+                if scale_match is None or (
+                    "$" not in table_text
+                    and not MONETARY_STATEMENT_RE.search(heading)
+                ):
                     continue
                 for row in rows:
                     cells = row.find_all(["td", "th"], recursive=False)
                     if len(cells) <= column:
                         continue
                     row_label = " ".join(cells[0].get_text(" ", strip=True).split())
-                    normalized_label = re.sub(
-                        r"\s*\([^)]*\)\s*", " ", row_label
-                    ).strip().casefold()
+                    normalized_label = _metric_label(row_label)
                     if normalized_label not in accepted_labels:
                         continue
                     raw = " ".join(cells[column].get_text(" ", strip=True).split())
