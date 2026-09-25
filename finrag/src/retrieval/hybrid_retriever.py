@@ -101,13 +101,17 @@ class HybridRetriever:
                 results.append((group, rank, document, float(score)))
         return results
 
-    def _lexical_search(self, query: str, scope: Scope) -> list[LexicalResult]:
+    def _lexical_search(
+        self, query: str, scope: Scope, *, total_limit: int | None = None
+    ) -> list[LexicalResult]:
         """Run a separate filtered BM25 search for every requested group."""
         groups = scope.retrieval_groups
         if not groups:
             return []
 
-        per_group = self._candidate_limit(LEXICAL_CANDIDATE_K, len(groups))
+        per_group = self._candidate_limit(
+            total_limit or LEXICAL_CANDIDATE_K, len(groups)
+        )
         results: list[LexicalResult] = []
         for group in groups:
             group_hits = self.lexical_index.search(
@@ -161,8 +165,14 @@ class HybridRetriever:
         # boost or replace a candidate found by the original query; expansions
         # may only add lower-priority candidates for recall.
         baseline_ids = set(candidates)
-        for expansion in query_expansions[:3]:
-            for group, rank, hit in self._lexical_search(expansion, scope):
+        expansions = query_expansions[:3]
+        expansion_limit = self._candidate_limit(
+            LEXICAL_CANDIDATE_K, len(expansions)
+        )
+        for expansion in expansions:
+            for group, rank, hit in self._lexical_search(
+                expansion, scope, total_limit=expansion_limit
+            ):
                 child_id = str(hit.record.get("child_id", ""))
                 if not child_id or child_id in baseline_ids:
                     continue
@@ -193,15 +203,22 @@ class HybridRetriever:
 
             dense_score = values.get("dense")
             coverage = float(values.get("coverage", 0.0))
+            normalized_rrf = rrf_scores[child_id] / max_rrf
             ranked_child = RankedChild(
                 child_id=child_id,
                 parent_id=parent_id,
                 text=str(values.get("text", "")),
-                metadata={**metadata, "retrieval_group": values.get("group")},
+                metadata={
+                    **metadata,
+                    "retrieval_group": values.get("group"),
+                    # Preserve RRF independently of optional reranking so
+                    # fail-open traces still expose the score actually used.
+                    "rrf_score": normalized_rrf,
+                },
                 dense_score=dense_score,
                 lexical_score=values.get("lexical"),
                 lexical_coverage=coverage,
-                fused_score=rrf_scores[child_id] / max_rrf,
+                fused_score=normalized_rrf,
             )
 
             passes_threshold = (

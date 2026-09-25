@@ -8,6 +8,35 @@ from collections import OrderedDict
 from src.financial.models import ValueType
 from src.generation.citations import expand_citations
 from src.orchestration.executor import MultiHopExecutionResult
+from src.retrieval.structured_lookup import VerifiedTableRow
+from src.schemas import Scope
+
+
+CALCULATION_INTENT_RE = re.compile(
+    r"\b(?:calculat(?:e|ed|es|ing)|comput(?:e|ed|es|ing)|percentage|percent|"
+    r"differences?|changes?|growth|ratios?|margins?|increas(?:e|ed|es|ing)|"
+    r"decreas(?:e|ed|es|ing))\b",
+    re.IGNORECASE,
+)
+NEGATED_CALCULATION_RE = re.compile(
+    r"\b(?:without|do\s+not|don't|no\s+need\s+to)\s+"
+    r"(?:calculate|compute|calculating|computing)"
+    r"(?:\s+(?:the\s+)?(?:absolute\s+|percentage\s+|percent\s+)?"
+    r"(?:change|difference|growth|ratio|margin|increase|decrease))?\b",
+    re.IGNORECASE,
+)
+NARRATIVE_INTENT_RE = re.compile(
+    r"\b(?:why|explain|reasons?|drivers?|factors?|causes?|management|commentary|"
+    r"risks?|outlook|guidance|profitability|said|say|affect(?:ed|s|ing)?|"
+    r"impact(?:ed|s|ing)?|contribut(?:e|ed|es|ing)|discuss(?:ed|es|ing)?|"
+    r"summari[sz](?:e|ed|es|ing)|m\s*d\s*&\s*a)\b",
+    re.IGNORECASE,
+)
+DIRECT_STATEMENT_INTENT_RE = re.compile(
+    r"\b(?:what\s+(?:was|is|were|are)|how\s+much|report(?:ed|s)?|compare|"
+    r"show|give|provide|list)\b",
+    re.IGNORECASE,
+)
 
 
 def _period(fact: object, source_years: dict[str, str]) -> str:
@@ -152,15 +181,90 @@ def verified_calculation_partial(
     return expand_citations(answer, execution.bundle.sources)
 
 
+def _metric_key(label: str) -> tuple[str, ...]:
+    """Normalize harmless label variants without defining financial aliases."""
+    words = []
+    for word in re.findall(r"[a-z0-9]+", label.casefold()):
+        if word == "total":
+            continue
+        if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        words.append(word)
+    return tuple(words)
+
+
+def _calculation_requested(question: str) -> bool:
+    return bool(CALCULATION_INTENT_RE.search(NEGATED_CALCULATION_RE.sub("", question)))
+
+
+def requires_verified_statement_values(question: str) -> bool:
+    """Return whether indexed statement cells are part of the requested answer."""
+    return bool(
+        DIRECT_STATEMENT_INTENT_RE.search(question)
+        and not NARRATIVE_INTENT_RE.search(question)
+        and not _calculation_requested(question)
+    )
+
+
+def verified_statement_answer_text(
+    rows: tuple[VerifiedTableRow, ...], scope: Scope, question: str
+) -> str | None:
+    """Render a complete one-metric answer directly from verified table cells."""
+    groups = scope.groups
+    if (
+        not groups
+        or not requires_verified_statement_values(question)
+    ):
+        return None
+
+    rows_by_group: dict[tuple[str, str], list[VerifiedTableRow]] = {}
+    for row in rows:
+        group = (str(row.source.get("ticker") or ""), str(row.year))
+        rows_by_group.setdefault(group, []).append(row)
+    if any(len(rows_by_group.get(group, ())) != 1 for group in groups):
+        return None
+
+    selected = [rows_by_group[group][0] for group in groups]
+    metric_keys = {_metric_key(row.label) for row in selected}
+    if len(metric_keys) != 1:
+        return None
+
+    if len(selected) == 1:
+        row = selected[0]
+        scale = row.scale.rstrip("s")
+        value = " ".join(part for part in (row.value, scale) if part)
+        return f"**{row.label}:** {value} [{row.source['id']}]"
+
+    lines = [
+        f"### {selected[0].label} comparison",
+        "",
+        "| Company | Fiscal year | Reported value |",
+        "| --- | ---: | ---: |",
+    ]
+    for row in selected:
+        ticker = str(row.source.get("ticker") or "Unknown")
+        scale = row.scale.rstrip("s")
+        value = " ".join(part for part in (row.value, scale) if part)
+        lines.append(f"| {ticker} | {row.year} | {value} [{row.source['id']}] |")
+    return "\n".join(lines)
+
+
 def _comparison_operation(calculations: list, question: str) -> str | None:
     available = {item.result.operation.value for item in calculations}
     preferences: list[str] = []
-    if re.search(r"\b(?:absolute|amount|dollars?|larger increase)\b", question, re.I):
-        preferences.append("absolute_change")
+    # The requested conclusion determines the comparison basis. A question may
+    # ask us to display both absolute and percentage changes, then ask which
+    # company grew faster; that conclusion is a rate comparison.
     if re.search(r"\b(?:percent|percentage|growth|grew|faster|performed better)\b", question, re.I):
         preferences.append("percentage_change")
     if re.search(r"\bmargins?\b", question, re.I):
         preferences.append("ratio")
+    if re.search(
+        r"\b(?:absolute|amount|dollars?|larger\s+absolute\s+increase)\b",
+        question,
+        re.I,
+    ):
+        preferences.append("absolute_change")
     preferences.extend(("percentage_change", "ratio", "absolute_change", "difference"))
     return next((operation for operation in preferences if operation in available), None)
 

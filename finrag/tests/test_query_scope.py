@@ -46,9 +46,14 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(result.requested_groups, (("MSFT", "2024"), ("TSLA", "2025")))
 
     def test_marks_live_price_request_out_of_scope(self) -> None:
-        self.assertTrue(
-            understand_query("What is TSLA's current stock price?").explicit_out_of_scope
-        )
+        for question in (
+            "What is TSLA's current stock price?",
+            "What is Tesla's stock price right now?",
+            "What is MSFT trading at today?",
+            "Give me JPM's latest share price.",
+        ):
+            with self.subTest(question=question):
+                self.assertTrue(understand_query(question).explicit_out_of_scope)
 
     def test_marks_clearly_unrelated_request_out_of_scope(self) -> None:
         result = resolve_scope(understand_query("Explain photosynthesis"))

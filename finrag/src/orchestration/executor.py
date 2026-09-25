@@ -32,10 +32,11 @@ from src.orchestration.evidence_merger import (
     normalize_doc_type as _normalize_doc_type,
 )
 from src.schemas import RetrievalBundle, Scope
-from src.retrieval.structured_lookup import StructuredDocumentLookup
+from src.retrieval.structured_lookup import StructuredDocumentLookup, VerifiedTableRow
 from src.tools.document_search import (
     DocumentSearchPurpose,
     DocumentSearchRequest,
+    DocumentSearchResult,
     DocumentSearchTool,
 )
 from src.tools.financial_calculator import FinancialCalculatorTool
@@ -110,6 +111,73 @@ class MultiHopExecutor:
         self.calculator = calculator or FinancialCalculatorTool()
         self.statement_lookup = statement_lookup
 
+    def _complete_statement_rows(
+        self,
+        requirement: EvidenceRequirement,
+        references: tuple[FactReference, ...],
+    ) -> tuple[VerifiedTableRow, ...]:
+        """Return exact rows only when every planned numeric input is verified."""
+        if (
+            self.statement_lookup is None
+            or requirement.evidence_type != EvidenceType.NUMERIC
+            or requirement.document_type != "10K"
+            or not references
+            or any(not reference.metric_hint for reference in references)
+        ):
+            return ()
+
+        unique_references = tuple({
+            (
+                reference.ticker,
+                reference.fiscal_year,
+                reference.period,
+                str(reference.metric_hint),
+            ): reference
+            for reference in references
+        }.values())
+        if {group.key for group in requirement.groups} != {
+            (reference.ticker, reference.fiscal_year)
+            for reference in unique_references
+        }:
+            return ()
+
+        selected: list[VerifiedTableRow] = []
+        seen: set[tuple[str, str, str]] = set()
+        for reference in unique_references:
+            period_years = re.findall(r"\b(?:19|20)\d{2}\b", reference.period or "")
+            if period_years and period_years != [reference.fiscal_year]:
+                return ()
+            row_scope = Scope(
+                tickers=(reference.ticker,),
+                years=(reference.fiscal_year,),
+                doc_type="10K",
+                requested_groups=((reference.ticker, reference.fiscal_year),),
+            )
+            rows = self.statement_lookup.statement_rows(
+                str(reference.metric_hint), row_scope
+            )
+            if len(rows) != 1:
+                return ()
+            row = rows[0]
+            source = {**row.source, "id": "S1"}
+            verified = self.fact_pipeline.recover_exact_table_row(
+                metric_hint=str(reference.metric_hint),
+                period_year=reference.fiscal_year,
+                sources=[source],
+                permitted_scope=row_scope,
+            )
+            if len(verified.valid_facts) != 1:
+                return ()
+            key = (
+                str(row.source.get("parent_id") or ""),
+                row.label.casefold(),
+                row.year,
+            )
+            if key not in seen:
+                selected.append(row)
+                seen.add(key)
+        return tuple(selected)
+
     def execute(
         self,
         plan: MultiHopPlan,
@@ -143,6 +211,12 @@ class MultiHopExecutor:
 
         for requirement in plan.requirements:
             scope = requirement.to_scope()
+            planned_references = references_by_requirement.get(
+                requirement.requirement_id, ()
+            )
+            structured_rows = self._complete_statement_rows(
+                requirement, planned_references
+            )
             search_query = requirement.question
             if requirement.evidence_type == EvidenceType.NUMERIC:
                 search_query = (
@@ -152,15 +226,31 @@ class MultiHopExecutor:
                 search_query += " financing debt covenants funding investment portfolio credit market risk"
             elif "tax reconciliation" in search_query.casefold():
                 search_query += " income taxes statutory rate tax credits valuation allowance"
-            search = self.document_search.execute(
-                DocumentSearchRequest(
-                    query=search_query,
-                    scope=scope,
-                    purpose=_purpose(requirement),
-                    query_expansions=query_expansions,
-                ),
-                permitted_scope=permitted_scope,
-            )
+            if structured_rows:
+                search = DocumentSearchResult(
+                    search_query,
+                    _purpose(requirement),
+                    RetrievalBundle(
+                        context="\n\n".join(
+                            str(row.source.get("evidence_text") or "")
+                            for row in structured_rows
+                        ),
+                        sources=[row.source for row in structured_rows],
+                        scope=scope,
+                        candidate_count=0,
+                        covered_groups=scope.groups,
+                    ),
+                )
+            else:
+                search = self.document_search.execute(
+                    DocumentSearchRequest(
+                        query=search_query,
+                        scope=scope,
+                        purpose=_purpose(requirement),
+                        query_expansions=query_expansions,
+                    ),
+                    permitted_scope=permitted_scope,
+                )
             sources = merger.add(search.bundle)
             source_ids_for_requirement = {
                 str(source.get("id")) for source in sources
@@ -186,15 +276,19 @@ class MultiHopExecutor:
             rejected_facts: list[dict[str, str]] = []
             recovered_groups: list[list[str]] = []
             if requirement.evidence_type == EvidenceType.NUMERIC and sources:
-                validation = self.fact_pipeline.run(
-                    question=requirement.question,
-                    sources=sources,
-                    permitted_scope=scope,
-                )
-                valid_map = {
-                    fact.fact_id: fact for fact in validation.valid_facts
-                }
-                rejections = list(validation.rejected_facts)
+                if structured_rows:
+                    valid_map: dict[str, ValidatedFinancialFact] = {}
+                    rejections = []
+                else:
+                    validation = self.fact_pipeline.run(
+                        question=requirement.question,
+                        sources=sources,
+                        permitted_scope=scope,
+                    )
+                    valid_map = {
+                        fact.fact_id: fact for fact in validation.valid_facts
+                    }
+                    rejections = list(validation.rejected_facts)
                 source_map = {str(source["id"]): source for source in sources}
                 metric_hints = metric_hints_by_requirement.get(
                     requirement.requirement_id, ()
@@ -242,10 +336,6 @@ class MultiHopExecutor:
                     return found
 
                 off_metric_facts: list[ValidatedFinancialFact] = []
-                planned_references = references_by_requirement.get(
-                    requirement.requirement_id, ()
-                )
-
                 def matches_planned_reference(
                     fact: ValidatedFinancialFact,
                 ) -> bool:
@@ -321,7 +411,7 @@ class MultiHopExecutor:
                 force_focused_extraction = (
                     "effective tax rate" in requirement.question.casefold()
                 )
-                initial_missing = [
+                initial_missing = [] if structured_rows else [
                     group
                     for group in requirement.groups
                     if force_focused_extraction
@@ -444,9 +534,19 @@ class MultiHopExecutor:
                             doc_type=requirement.document_type,
                             requested_groups=(group.key,),
                         )
-                        for row in self.statement_lookup.statement_rows(
-                            requirement.question, recovery_scope
-                        ):
+                        group_rows = (
+                            tuple(
+                                row for row in structured_rows
+                                if str(row.source.get("ticker") or "").upper()
+                                == group.ticker
+                                and row.year == group.fiscal_year
+                            )
+                            if structured_rows
+                            else self.statement_lookup.statement_rows(
+                                requirement.question, recovery_scope
+                            )
+                        )
+                        for row in group_rows:
                             indexed_bundle = RetrievalBundle(
                                 row.source["evidence_text"], [row.source],
                                 recovery_scope, 0,
@@ -482,7 +582,10 @@ class MultiHopExecutor:
                                         fact.ticker,
                                         str(source.get("fiscal_year", "")),
                                     )
-                                    if fact_group == group.key and matches_planned_reference(fact):
+                                    if (
+                                        fact_group == group.key
+                                        and _fact_matches_metric(fact, row.label)
+                                    ):
                                         valid_map.pop(fact_id, None)
                                 for fact in exact_facts:
                                     valid_map[fact.fact_id] = fact
@@ -572,6 +675,9 @@ class MultiHopExecutor:
                     "evidence_type": requirement.evidence_type.value,
                     "document_type": requirement.document_type,
                     "purpose": search.purpose.value,
+                    "retrieval_mode": (
+                        "structured_statement" if structured_rows else "hybrid"
+                    ),
                     "candidate_count": search.candidate_count,
                     "source_ids": [str(source["id"]) for source in sources],
                     "fact_ids": [fact.fact_id for fact in facts],

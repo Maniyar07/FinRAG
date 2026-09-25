@@ -182,6 +182,30 @@ class AnswerGeneratorTests(unittest.TestCase):
         self.assertEqual(result.attempts, 2)
         self.assertEqual(result.validation_reason, "valid_inline_citations")
 
+    def test_numbered_items_require_their_own_inline_citations(self) -> None:
+        uncited = (
+            "### Factors\n\n"
+            "1. Revenue declined because deliveries fell.\n"
+            "2. Profitability was pressured by incentives.\n\n"
+            "Citations: [S1]"
+        )
+        repaired = (
+            "### Factors\n\n"
+            "1. Revenue declined because deliveries fell [S1].\n"
+            "2. Profitability was pressured by incentives [S1]."
+        )
+        chain = FakeChain([
+            {"answer": uncited, "source_ids": ["S1"]},
+            {"answer": repaired, "source_ids": ["S1"]},
+        ])
+
+        result = AnswerGenerator(chain=chain).generate_with_trace(
+            "Explain the revenue and profitability factors.", bundle()
+        )
+
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(result.validation_reason, "valid_inline_citations")
+
     def test_long_single_paragraph_accepts_declared_source_id(self) -> None:
         narrative = "The filing describes competitive pressure in its market. " * 10
         chain = FakeChain([{"answer": narrative, "source_ids": ["S1"]}])

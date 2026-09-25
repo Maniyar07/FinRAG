@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from src.app.chat_service import ChatService
 from src.app.response_composer import (
+    requires_verified_statement_values,
     verified_calculation_partial,
     verified_calculation_text,
 )
@@ -96,6 +97,55 @@ def _service(*, semantic_parser=None) -> ChatService:
 
 
 class ChatServiceOrchestrationTests(unittest.TestCase):
+    def test_narrative_intent_family_does_not_require_statement_values(self) -> None:
+        questions = (
+            "What factors affected automotive profitability?",
+            "Why did annual revenue decline?",
+            "Discuss the impact on operating performance.",
+            "Summarize management commentary about revenue drivers.",
+        )
+
+        for question in questions:
+            with self.subTest(question=question):
+                self.assertFalse(requires_verified_statement_values(question))
+
+        self.assertTrue(
+            requires_verified_statement_values("What was total revenue in 2025?")
+        )
+
+    def test_verified_rows_answer_simple_multi_year_comparison_without_llm(self) -> None:
+        service = _service()
+        rows = tuple(
+            VerifiedTableRow(
+                "Total revenues",
+                year,
+                value,
+                "millions",
+                {
+                    "id": "S1", "parent_id": f"statement-{year}", "ticker": "MSFT",
+                    "fiscal_year": year, "doc_type": "10K", "section": "Item 8",
+                    "source": f"MSFT_{year}_10K.pdf", "evidence_text": value,
+                },
+            )
+            for year, value in (("2024", "245,122"), ("2025", "281,724"))
+        )
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: rows,
+        )
+
+        result = service.ask(
+            "Compare Microsoft's total revenue in its 2024 and 2025 10-K filings."
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertIn("245,122 million [S1]", result.answer)
+        self.assertIn("281,724 million [S2]", result.answer)
+        self.assertEqual(result.trace["retrieval"]["candidate_count"], 0)
+        self.assertEqual(result.trace["generation"]["mode"], "verified_statement_answer")
+        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(service.generator.calls, [])
+
     def test_generation_validation_failure_has_distinct_decision(self) -> None:
         service = _service()
         service.generator.generate_with_trace = lambda *_, **__: SimpleNamespace(
@@ -109,7 +159,57 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(result.decision, Decision.VALIDATION_FAILED)
 
-    def test_indexed_statement_row_reaches_ordinary_generation(self) -> None:
+    def test_narrative_request_keeps_statement_row_in_ordinary_generation(self) -> None:
+        service = _service()
+        row_source = {
+            "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
+            "fiscal_year": "2025", "doc_type": "10K",
+            "source": "TSLA_2025_10K.pdf", "section": "Item 8",
+            "evidence_text": "Total revenues 94,827",
+        }
+        row = VerifiedTableRow("Total revenues", "2025", "94,827", "millions", row_source)
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: (row,),
+        )
+
+        result = service.ask("Explain Tesla revenue in its 2025 10-K.")
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(result.trace["retrieval"]["verified_statement_rows"], 1)
+        _, bundle, kwargs = service.generator.calls[0]
+        self.assertEqual(kwargs["verified_rows"], ())
+        self.assertEqual(len(bundle.sources), 2)
+
+    def test_mda_factor_question_cannot_be_reduced_to_one_statement_value(self) -> None:
+        service = _service()
+        row_source = {
+            "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
+            "fiscal_year": "2025", "doc_type": "10K", "section": "Item 8",
+            "source": "TSLA_2025_10K.pdf", "evidence_text": "Automotive revenues 69,526",
+        }
+        row = VerifiedTableRow(
+            "Total automotive revenues", "2025", "69,526", "millions", row_source
+        )
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: (row,),
+        )
+
+        result = service.ask(
+            "According to Tesla's 2025 10-K MD&A, what factors affected "
+            "automotive revenue and profitability?"
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(len(service.retriever.calls), 1)
+        self.assertEqual(len(service.generator.calls), 1)
+        self.assertEqual(service.generator.calls[0][2]["verified_rows"], ())
+        self.assertNotEqual(
+            result.trace["generation"].get("mode"), "verified_statement_answer"
+        )
+
+    def test_single_verified_statement_value_bypasses_retrieval_and_generation(self) -> None:
         service = _service()
         row_source = {
             "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
@@ -126,10 +226,61 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         result = service.ask("What was Tesla revenue in its 2025 10-K?")
 
         self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertEqual(result.trace["retrieval"]["verified_statement_rows"], 1)
-        _, bundle, kwargs = service.generator.calls[0]
-        self.assertEqual(kwargs["verified_rows"][0].source["id"], "S2")
-        self.assertEqual(len(bundle.sources), 2)
+        self.assertIn("94,827 million [S1]", result.answer)
+        self.assertEqual(result.trace["retrieval"]["candidate_count"], 0)
+        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(service.generator.calls, [])
+
+    def test_negated_calculation_uses_verified_statement_fast_path(self) -> None:
+        service = _service()
+        rows = tuple(
+            VerifiedTableRow(
+                "Net income", year, value, "millions",
+                {
+                    "id": "S1", "parent_id": f"statement-{year}", "ticker": "MSFT",
+                    "fiscal_year": year, "doc_type": "10K", "section": "Item 8",
+                    "source": f"MSFT_{year}_10K.pdf", "evidence_text": value,
+                },
+            )
+            for year, value in (("2024", "88,136"), ("2025", "101,832"))
+        )
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: rows,
+        )
+
+        result = service.ask(
+            "Compare Microsoft's net income in its 2024 and 2025 10-K filings "
+            "without calculating the change."
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(result.trace["retrieval"]["candidate_count"], 0)
+        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(service.generator.calls, [])
+
+    def test_incomplete_statement_coverage_falls_back_to_hybrid_retrieval(self) -> None:
+        service = _service()
+        row = VerifiedTableRow(
+            "Total revenue", "2024", "245,122", "millions",
+            {
+                "id": "S1", "parent_id": "statement-2024", "ticker": "MSFT",
+                "fiscal_year": "2024", "doc_type": "10K", "section": "Item 8",
+                "source": "MSFT_2024_10K.pdf", "evidence_text": "245,122",
+            },
+        )
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: (row,),
+        )
+
+        result = service.ask(
+            "Compare Microsoft's total revenue in its 2024 and 2025 10-K filings."
+        )
+
+        self.assertEqual(result.decision, Decision.INSUFFICIENT_EVIDENCE)
+        self.assertEqual(len(service.retriever.calls), 1)
+        self.assertEqual(service.generator.calls, [])
 
     def test_exact_table_lookup_bypasses_ranked_search_and_generation(self) -> None:
         service = _service()
@@ -493,6 +644,48 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertEqual(answer.count("**2025:** 120 [S2]"), 1)
         self.assertIn("**Absolute change:** **USD 20 million**", answer)
         self.assertIn("**Percentage change:** **20%**", answer)
+
+    def test_faster_growth_conclusion_uses_percentage_not_absolute_change(self) -> None:
+        facts = tuple(
+            SimpleNamespace(
+                fact_id=f"F{index}", ticker=ticker,
+                metric="Research and development", period=year,
+                raw_value=value, source_id=f"S{index}",
+            )
+            for index, (ticker, year, value) in enumerate(
+                (
+                    ("MSFT", "2024", "29,510"), ("MSFT", "2025", "32,488"),
+                    ("TSLA", "2024", "4,540"), ("TSLA", "2025", "6,411"),
+                ),
+                start=1,
+            )
+        )
+        calculations = tuple(
+            SimpleNamespace(
+                label=f"{ticker} R&D {operation}",
+                result=SimpleNamespace(
+                    input_fact_ids=ids, result=Decimal(value), result_unit=unit,
+                    currency="USD" if unit == "currency" else None,
+                    scale="millions" if unit == "currency" else None,
+                    source_ids=sources,
+                    operation=SimpleNamespace(value=operation),
+                ),
+            )
+            for ticker, ids, sources, operation, value, unit in (
+                ("MSFT", ("F1", "F2"), ("S1", "S2"), "absolute_change", "2978", "currency"),
+                ("MSFT", ("F1", "F2"), ("S1", "S2"), "percentage_change", "10.09", "percent"),
+                ("TSLA", ("F3", "F4"), ("S3", "S4"), "absolute_change", "1871", "currency"),
+                ("TSLA", ("F3", "F4"), ("S3", "S4"), "percentage_change", "41.21", "percent"),
+            )
+        )
+
+        answer = verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=calculations),
+            "Calculate both absolute and percentage changes and identify which increased spending faster.",
+        )
+
+        self.assertIn("TSLA grew faster", answer)
+        self.assertNotIn("MSFT grew faster", answer)
 
     def test_compound_comparison_uses_enabled_multihop_path(self) -> None:
         service = _service()

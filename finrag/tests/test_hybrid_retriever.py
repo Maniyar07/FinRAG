@@ -27,9 +27,11 @@ class FakeVectorStore:
 class FakeLexicalIndex:
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.limits: list[int] = []
 
     def search(self, query, scope, *, k):
         self.queries.append(query)
+        self.limits.append(k)
         if query == "remaining performance obligations":
             return [
                 LexicalHit(
@@ -79,8 +81,31 @@ class HybridExpansionTests(unittest.TestCase):
         )
         self.assertEqual([child.child_id for child in context.ranked], ["c1", "c2"])
         self.assertGreater(context.ranked[0].fused_score, context.ranked[1].fused_score)
+        self.assertTrue(
+            all(
+                child.metadata["rrf_score"] == child.fused_score
+                for child in context.ranked
+            )
+        )
         self.assertEqual(context.kwargs["query"], "contracted but unrecognized revenue")
         self.assertTrue(context.kwargs["preserve_all"])
+
+    def test_expansions_share_one_lexical_candidate_budget(self) -> None:
+        lexical = FakeLexicalIndex()
+        retriever = HybridRetriever(
+            FakeVectorStore(),
+            lexical_index=lexical,
+            context_builder=FakeContextBuilder(),
+        )
+
+        retriever.retrieve(
+            "baseline",
+            Scope(("MSFT",), ("2025",), "10K"),
+            query_expansions=("expansion one", "expansion two", "expansion three"),
+        )
+
+        self.assertEqual(lexical.limits[0], 48)
+        self.assertEqual(lexical.limits[1:], [16, 16, 16])
 
 
 if __name__ == "__main__":

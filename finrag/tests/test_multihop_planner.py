@@ -29,6 +29,29 @@ def requirement(*, ticker="MSFT", year="2024", document_type="10K") -> dict:
 
 
 class MultiHopPlannerTests(unittest.TestCase):
+    def test_net_margin_uses_formula_plan_with_metric_bound_inputs(self) -> None:
+        chain = FakeChain({})
+        planner = MultiHopPlanner(chain=chain)
+        scope = Scope(
+            ("MSFT", "TSLA"), ("2025",), doc_type="10K",
+            requested_groups=(("MSFT", "2025"), ("TSLA", "2025")),
+        )
+
+        plan = planner.plan(
+            question="Compare MSFT and TSLA net margins for 2025.",
+            permitted_scope=scope,
+        )
+
+        self.assertEqual(chain.calls, [])
+        self.assertEqual(len(plan.calculations), 2)
+        self.assertEqual(
+            {
+                reference.metric_hint
+                for calculation in plan.calculations
+                for reference in calculation.inputs
+            },
+            {"net income", "total revenue"},
+        )
     def test_raw_plan_normalizes_identifiers_and_ignores_top_level_noise(self) -> None:
         payload = {
             "requirements": [
@@ -313,8 +336,8 @@ class MultiHopPlannerTests(unittest.TestCase):
 
         plan = planner.plan(
             question=("Compare MSFT and TSLA research and development expenses for "
-                      "2024 and 2025. Calculate the absolute change and percentage "
-                      "change from 2024 to 2025, and identify which grew faster."),
+                      "fiscal 2024 and 2025. Calculate the absolute and percentage "
+                      "change, and identify which grew faster."),
             permitted_scope=scope,
         )
 

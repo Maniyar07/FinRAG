@@ -15,6 +15,11 @@ YEAR_RE = re.compile(r"(?:19|20)\d{2}")
 
 def _terms(value: str) -> set[str]:
     terms = set(WORD_RE.findall(value.casefold()))
+    # SEC filings spell this metric both as "R&D" and "research and
+    # development". Normalize the abbreviation before applying ordinary word
+    # matching so the same row is selected without company-specific aliases.
+    if {"r", "d"}.issubset(terms):
+        terms = (terms - {"r", "d"}) | {"research", "development"}
     normalized = {
         term[:-1] if term.endswith("s") and len(term) > 4 else term
         for term in terms
@@ -45,6 +50,19 @@ MATERIAL_METRIC_QUALIFIERS = frozenset(
         "short",
     }
 )
+
+
+PRIMARY_STATEMENT_METRICS = frozenset(
+    {
+        frozenset({"revenue"}),
+        frozenset({"operation", "income"}),
+        frozenset({"research", "development"}),
+    }
+)
+
+
+def _is_primary_statement_metric(metric_hint: str) -> bool:
+    return frozenset(_terms(metric_hint)) in PRIMARY_STATEMENT_METRICS
 
 
 def _fact_matches_metric(fact: ValidatedFinancialFact, metric_hint: str) -> bool:
@@ -139,10 +157,7 @@ def _focused_numeric_sources(
 ) -> list[dict]:
     """Prefer parents that contain the requested primary statement/table."""
     lowered = question.casefold()
-    if any(
-        hint.casefold() in {"revenue", "total revenue", "total revenues", "operating income", "research and development expense"}
-        for hint in metric_hints
-    ):
+    if any(_is_primary_statement_metric(hint) for hint in metric_hints):
         statements = [
             source for source in sources
             if "financial statements and supplementary data"
@@ -246,10 +261,7 @@ def _select_fact(
     # A consolidated statement outranks segment disclosures for company-wide
     # metrics. Keep conflicting figures ambiguous when no primary row exists.
     primary: list[ValidatedFinancialFact] = []
-    if reference.metric_hint and reference.metric_hint.casefold() in {
-        "revenue", "total revenue", "total revenues", "operating income",
-        "research and development expense",
-    }:
+    if reference.metric_hint and _is_primary_statement_metric(reference.metric_hint):
         primary = [
             fact for fact in candidates
             if "financial statements and supplementary data"

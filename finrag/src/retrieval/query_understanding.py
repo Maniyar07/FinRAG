@@ -29,6 +29,14 @@ OUT_OF_SCOPE_RE = re.compile(
     r"capital of|prime minister|president of|photosynthesis|periodic table)\b",
     re.IGNORECASE,
 )
+LIVE_MARKET_RE = re.compile(
+    r"\b(?:"
+    r"(?:current|latest|live|real[- ]time)\s+(?:stock|share|market)\s+price|"
+    r"(?:stock|share|market)\s+price\s+(?:right\s+now|today|currently|now)|"
+    r"trad(?:e|ing)\s+at\s+(?:right\s+now|today|currently|now)"
+    r")\b",
+    re.IGNORECASE,
+)
 DOMAIN_RE = re.compile(
     r"\b(company|companies|business|strategy|operations?|product|customer|employee|financial|"
     r"filing|report|earnings|revenue|income|profit|loss|expense|cash|liquidity|asset|debt|"
@@ -321,7 +329,9 @@ def understand_query(query: str) -> QueryUnderstanding:
         all_tickers=bool(ALL_TICKER_RE.search(normalized)),
         all_years=bool(ALL_YEAR_RE.search(normalized)),
         comparison=bool(COMPARISON_RE.search(normalized)) or len(tickers) > 1 or len(years) > 1,
-        explicit_out_of_scope=bool(OUT_OF_SCOPE_RE.search(normalized)),
+        explicit_out_of_scope=bool(
+            OUT_OF_SCOPE_RE.search(normalized) or LIVE_MARKET_RE.search(normalized)
+        ),
         topic=topic,
         unsupported_years=unsupported_years,
         unsupported_companies=unsupported_companies,

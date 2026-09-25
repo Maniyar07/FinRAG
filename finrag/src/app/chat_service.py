@@ -19,6 +19,10 @@ from src.generation.answer_guardrails import (
 from src.ingestion.manifest import available_keys, load_manifest
 from src.config import LOGS_DIR, MULTIHOP_ENABLED, get_index_paths
 from src.app.multihop_coordinator import MultiHopCoordinator
+from src.app.response_composer import (
+    requires_verified_statement_values,
+    verified_statement_answer_text,
+)
 from src.orchestration.executor import MultiHopExecutor
 from src.orchestration.planner import MultiHopPlanner, should_use_multihop
 from src.retrieval.context_builder import ContextBuilder
@@ -527,6 +531,59 @@ class ChatService:
                 wants_table=understanding.wants_table,
                 trace=trace,
             )
+
+        # Exact statement cells are both cheaper and more reliable than ranked
+        # retrieval for complete, non-narrative, non-calculation requests. Any
+        # incomplete or unsupported shape falls through to the existing hybrid
+        # pipeline unchanged.
+        if (
+            lookup is not None
+            and hasattr(lookup, "statement_rows")
+            and not understanding.wants_table
+        ):
+            direct_rows = lookup.statement_rows(effective_question, resolution.scope)
+            direct_bundle, direct_rows = self._with_statement_rows(
+                RetrievalBundle(
+                    "", [], resolution.scope, 0,
+                    covered_groups=resolution.scope.groups,
+                ),
+                direct_rows,
+            )
+            direct_answer = verified_statement_answer_text(
+                direct_rows, resolution.scope, effective_question
+            )
+            if direct_answer is not None:
+                trace["retrieval"] = {
+                    "mode": "structured_statement",
+                    "candidate_count": 0,
+                    "source_ids": [source["id"] for source in direct_bundle.sources],
+                    "source_groups": [
+                        [source["ticker"], source["fiscal_year"], source["doc_type"]]
+                        for source in direct_bundle.sources
+                    ],
+                    "reranker_applied": False,
+                    "sources": [
+                        self._retrieval_source_trace(source)
+                        for source in direct_bundle.sources
+                    ],
+                    "verified_statement_rows": len(direct_rows),
+                }
+                trace["generation"] = {
+                    "mode": "verified_statement_answer",
+                    "attempts": 0,
+                    "validation_reason": "verified_structured_rows",
+                    "raw_output_previews": [],
+                }
+                result = ChatResult(
+                    Decision.ANSWERED,
+                    expand_citations(direct_answer, direct_bundle.sources),
+                    resolution.scope,
+                    direct_bundle.sources,
+                    resolution.inherited_fields,
+                    trace,
+                )
+                self._record({**trace, "decision": result.decision.value})
+                return result
         try:
             search_result = self.document_search_tool.execute(
                 DocumentSearchRequest(
@@ -609,7 +666,11 @@ class ChatService:
                 history=history,
                 wants_table=understanding.wants_table,
                 wants_complete_table=understanding.wants_complete_table,
-                verified_rows=verified_rows,
+                verified_rows=(
+                    verified_rows
+                    if requires_verified_statement_values(effective_question)
+                    else ()
+                ),
             )
             answer = generation.answer
             trace["generation"] = {

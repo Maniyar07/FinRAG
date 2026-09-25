@@ -14,9 +14,11 @@ from src.orchestration.models import (
     MultiHopPlan,
     PlannedCalculation,
 )
+from src.orchestration.calculation_runner import run_calculations
 from src.schemas import RetrievalBundle, Scope
 from src.retrieval.structured_lookup import StructuredDocumentLookup
 from src.tools.document_search import DocumentSearchResult
+from src.tools.financial_calculator import FinancialCalculatorTool
 
 
 class FakeDocumentSearch:
@@ -95,6 +97,68 @@ def test_indexed_statement_recovers_fact_missed_by_ranked_search(tmp_path) -> No
 
     assert result.complete
     assert any(fact.raw_value == "97,690" for fact in result.facts)
+
+
+def test_complete_structured_inputs_bypass_multihop_document_search(tmp_path) -> None:
+    for year, value in (("2024", "$97,690"), ("2025", "$94,827")):
+        (tmp_path / f"statement-{year}.json").write_text(json.dumps({
+            "page_content": (
+                "## Consolidated Statements of Operations\n(in millions)\n"
+                f"<table><tr><th>Metric</th><th>{year}</th></tr>"
+                f"<tr><td>Total revenues</td><td>{value}</td></tr></table>"
+            ),
+            "metadata": {
+                "ticker": "TSLA", "fiscal_year": year, "doc_type": "10K",
+                "item": "Item 8",
+                "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+                "source": f"TSLA_{year}_10K.pdf", "pdf_page_start": 50,
+            },
+        }), encoding="utf-8")
+
+    groups = tuple(
+        EvidenceGroup(ticker="TSLA", fiscal_year=year)
+        for year in ("2024", "2025")
+    )
+    requirement = EvidenceRequirement(
+        requirement_id="revenue",
+        question="Find Tesla total revenue for 2024 and 2025.",
+        evidence_type="numeric",
+        document_type="10K",
+        groups=groups,
+    )
+    calculation = PlannedCalculation(
+        calculation_id="revenue_change",
+        label="Tesla total revenue absolute change",
+        operation="absolute_change",
+        inputs=tuple(
+            FactReference(
+                requirement_id="revenue", ticker="TSLA",
+                fiscal_year=year, metric_hint="Revenue",
+            )
+            for year in ("2024", "2025")
+        ),
+    )
+    search = FakeDocumentSearch()
+    executor = MultiHopExecutor(
+        document_search=search,
+        fact_pipeline=FinancialFactPipeline(extractor=EmptyExtractor()),
+        statement_lookup=StructuredDocumentLookup(tmp_path),
+    )
+
+    result = executor.execute(
+        MultiHopPlan(
+            original_question="Calculate Tesla revenue change.",
+            requirements=(requirement,),
+            calculations=(calculation,),
+        ),
+        permitted_scope=Scope(("TSLA",), ("2024", "2025"), "10K"),
+    )
+
+    assert result.complete
+    assert search.calls == []
+    assert result.bundle.candidate_count == 0
+    assert result.trace["requirements"][0]["retrieval_mode"] == "structured_statement"
+    assert result.calculations[0].result.result == Decimal("-2863")
 
 
 class MissingInitialGroupSearch(FakeDocumentSearch):
@@ -250,6 +314,41 @@ def plan() -> MultiHopPlan:
 
 
 class MultiHopExecutorTests(unittest.TestCase):
+    def test_calculation_rejects_one_fact_bound_to_both_operands(self) -> None:
+        source = {"id": "S1", "ticker": "MSFT", "fiscal_year": "2025"}
+        fact = FakeFactPipeline().run(
+            question="revenue",
+            sources=[source],
+            permitted_scope=Scope(("MSFT",), ("2025",), "10K"),
+        ).valid_facts[0]
+        calculation = PlannedCalculation(
+            calculation_id="net_margin",
+            label="MSFT net margin",
+            operation="ratio",
+            inputs=(
+                FactReference(
+                    requirement_id="net_income", ticker="MSFT",
+                    fiscal_year="2025",
+                ),
+                FactReference(
+                    requirement_id="revenue", ticker="MSFT",
+                    fiscal_year="2025",
+                ),
+            ),
+        )
+
+        result = run_calculations(
+            (calculation,),
+            facts_by_requirement={"net_income": (fact,), "revenue": (fact,)},
+            source_map={"S1": source},
+            available_facts={fact.fact_id: fact},
+            calculator=FinancialCalculatorTool(),
+        )
+
+        self.assertEqual(result.completed, ())
+        self.assertEqual(result.issues, ("net_margin:calculation_unavailable",))
+        self.assertIn("same validated fact", result.trace[0]["reason"])
+
     def test_indexed_statement_row_replaces_model_extracted_variant(self) -> None:
         import tempfile
         from pathlib import Path
@@ -564,6 +663,30 @@ class MultiHopExecutorTests(unittest.TestCase):
                 ticker="MSFT",
                 fiscal_year="2024",
                 metric_hint="Research and development expense",
+            ),
+            {"rd": (fact,)},
+            {"S1": source},
+        )
+
+        self.assertEqual(selected.fact_id, fact.fact_id)
+
+    def test_fact_binding_normalizes_rd_abbreviation(self) -> None:
+        source = {"id": "S1", "ticker": "MSFT", "fiscal_year": "2024"}
+        fact = FakeFactPipeline().run(
+            question="research and development",
+            sources=[source],
+            permitted_scope=Scope(("MSFT",), ("2024",), "10K"),
+        ).valid_facts[0].model_copy(
+            update={
+                "metric": "Research and development",
+                "row_label": "Research and development",
+            }
+        )
+
+        selected = _select_fact(
+            FactReference(
+                requirement_id="rd", ticker="MSFT", fiscal_year="2024",
+                metric_hint="R&D expenses",
             ),
             {"rd": (fact,)},
             {"S1": source},

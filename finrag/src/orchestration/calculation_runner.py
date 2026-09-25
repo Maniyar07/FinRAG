@@ -47,6 +47,12 @@ def run_calculations(
                 for reference in planned.inputs
             )
             selected = _ordered_calculation_facts(planned, selected)
+            # A binary formula must never silently use one evidence cell as
+            # both operands. This catches an underspecified plan or an
+            # extraction mix-up before it can produce a plausible but false
+            # result such as revenue / revenue = 1.
+            if len(selected) > 1 and len({fact.fact_id for fact in selected}) != len(selected):
+                raise ValueError("calculation operands resolved to the same validated fact")
             request = CalculationRequest(
                 operation=planned.operation,
                 input_fact_ids=tuple(fact.fact_id for fact in selected),

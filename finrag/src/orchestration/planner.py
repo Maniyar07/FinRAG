@@ -182,7 +182,9 @@ class MultiHopPlanner:
 
         # Common accounting formulas are safer and cheaper to plan
         # deterministically than to ask the model to invent derived table rows.
-        if re.search(r"\bnet\s+profit\s+margin\b", cleaned, re.IGNORECASE):
+        if re.search(
+            r"\bnet\s+(?:profit\s+)?margins?\b", cleaned, re.IGNORECASE
+        ):
             try:
                 fallback = self._margin_fallback(
                     question=cleaned,

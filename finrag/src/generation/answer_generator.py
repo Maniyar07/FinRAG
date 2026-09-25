@@ -90,7 +90,10 @@ class AnswerGenerator:
         """Declared IDs are insufficient for a multi-section synthesized answer."""
         nonempty_lines = [line for line in answer.splitlines() if line.strip()]
         section_count = sum(bool(re.match(r"^#{1,6}\s", line)) for line in nonempty_lines)
-        bullet_count = sum(line.lstrip().startswith(("- ", "* ")) for line in nonempty_lines)
+        bullet_count = sum(
+            bool(re.match(r"^\s*(?:[-*]|\d+\.)\s+", line))
+            for line in nonempty_lines
+        )
         return section_count >= 2 or bullet_count >= 2 or len(nonempty_lines) >= 6
 
     @staticmethod
@@ -139,7 +142,7 @@ class AnswerGenerator:
         )
         for line in answer.splitlines():
             stripped = line.strip()
-            if not stripped.startswith(("- ", "* ")):
+            if not re.match(r"^(?:[-*]|\d+\.)\s+", stripped):
                 continue
             substantive = (
                 len(stripped) >= 70

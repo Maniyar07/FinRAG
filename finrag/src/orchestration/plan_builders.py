@@ -37,17 +37,24 @@ def _change_operations(question: str) -> tuple[CalculationOperation, ...]:
         return (CalculationOperation.CAGR,)
     if "ratio" in lowered:
         return (CalculationOperation.RATIO,)
+    requests_change = bool(re.search(r"\bchanges?\b", lowered))
     operations = tuple(
         operation
         for requested, operation in (
-            ("absolute change", CalculationOperation.ABSOLUTE_CHANGE),
-            ("percentage change", CalculationOperation.PERCENTAGE_CHANGE),
+            (
+                bool(re.search(r"\babsolute\b", lowered)),
+                CalculationOperation.ABSOLUTE_CHANGE,
+            ),
+            (
+                bool(re.search(r"\b(?:percentage|percent)\b", lowered)),
+                CalculationOperation.PERCENTAGE_CHANGE,
+            ),
         )
-        if requested in lowered
+        if requests_change and requested
     )
     if operations:
         return operations
-    if re.search(r"\bchanges?\b", lowered) and len(YEAR_RE.findall(lowered)) >= 2:
+    if requests_change and len(YEAR_RE.findall(lowered)) >= 2:
         return (CalculationOperation.ABSOLUTE_CHANGE,)
     raise ValueError("Deterministic comparison fallback found no calculation.")
 
@@ -280,7 +287,8 @@ def _comparison_fallback(
         ):
             calculated_metric_match = None
     metric_match = calculated_metric_match or re.search(
-        r"\bcompare\s+(.+?)\s+for\s+(?=(?:19|20)\d{2})",
+        r"\bcompare\s+(.+?)\s+for\s+(?:fiscal(?:\s+year)?\s+)?"
+        r"(?=(?:19|20)\d{2})",
         search_question,
         re.IGNORECASE,
     )

@@ -632,7 +632,7 @@ function renderMessage(message) {
   const decision = document.createElement("span");
   decision.className = "decision-badge";
   const decisionLabels = {
-    answered: "Grounded answer",
+    answered: "Cited answer",
     clarify: "Needs details",
     insufficient_evidence: "Limited evidence",
     validation_failed: "Answer could not be verified",
@@ -863,6 +863,14 @@ function renderMarkdown(value, sources) {
         appendInline(item, itemMatch[1], sources);
         list.append(item);
         index += 1;
+        // Markdown permits blank lines between list items. Keep them in one
+        // semantic list so repeated model-authored markers such as `1.` are
+        // displayed as 1, 2, 3 instead of restarting at 1 each time.
+        let nextItem = index;
+        while (nextItem < lines.length && !lines[nextItem].trim()) nextItem += 1;
+        if (nextItem < lines.length && pattern.test(lines[nextItem])) {
+          index = nextItem;
+        }
       }
       container.append(list);
       continue;
