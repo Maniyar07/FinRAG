@@ -10,6 +10,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from src.constants import COMPANY_NAMES
 from src.schemas import Scope
 
 
@@ -25,7 +26,8 @@ PAGE_RE = re.compile(r"\[PAGE:\s*(\d+)\]", re.IGNORECASE)
 TABLE_STOP_WORDS = frozenset(
     "a an and all as at by complete data document exact filing financial for from "
     "full give in inside into of on presented provide report requested show table the "
-    "this to whole with year".split()
+    "this to whole with year exactly please me related was follows following "
+    "could would can you it also".split()
 )
 PERIOD_ROW_TERMS = frozenset(
     "ended ending fiscal quarter quarters month months day days january february "
@@ -173,43 +175,60 @@ class StructuredDocumentLookup:
         group = self._group(scope)
         if group is None:
             return None
-        requested_terms = self._terms(question)
+        scope_terms = self._terms(f"{group[0]} {COMPANY_NAMES.get(group[0], '')}")
+        requested_terms = self._terms(question) - scope_terms
         if not requested_terms:
             return None
-        candidates = []
+        candidates = {}
         for parent_id, body, metadata in self._documents(*group):
             headings = list(HEADING_RE.finditer(body))
-            for index, heading in enumerate(headings):
-                title = self._heading_title(heading.group(1))
-                heading_terms = self._terms(title)
-                matched = requested_terms & heading_terms
-                if not matched or len(matched) / len(heading_terms) < 0.5:
-                    continue
-                table_match = HTML_TABLE_RE.search(body, heading.end())
-                if table_match is None or table_match.start() - heading.end() > 500:
-                    continue
-                intervening = headings[index + 1 :]
-                if any(
-                    other.start() < table_match.start()
-                    and not self._unit_heading(self._heading_title(other.group(1)))
-                    for other in intervening
-                ):
+            previous_end = 0
+            for table_match in HTML_TABLE_RE.finditer(body):
+                heading = next(
+                    (value for value in reversed(headings)
+                     if previous_end <= value.start() < table_match.start()
+                     and not self._unit_heading(self._heading_title(value.group(1)))),
+                    None,
+                )
+                start = heading.end() if heading else previous_end
+                between = body[start:table_match.start()]
+                previous_end = table_match.end()
+                paragraphs = [
+                    self._heading_title(re.sub(r"(?m)^\s*#{1,5}\s+", "", value)) for value in
+                    re.split(r"\n\s*\n", PAGE_RE.sub("", between).strip())
+                    if value.strip()
+                ]
+                captions = [value for value in paragraphs
+                            if not self._unit_heading(value)]
+                title = captions[-1] if captions else (
+                    self._heading_title(heading.group(1)) if heading else ""
+                )
+                title_terms = self._terms(title)
+                table_terms = self._terms(
+                    BeautifulSoup(table_match.group(), "html.parser").get_text(" ", strip=True)
+                )
+                matched = requested_terms & title_terms
+                if not matched or not requested_terms <= title_terms | table_terms:
                     continue
                 markdown = self._markdown_table(table_match.group())
                 if markdown is None:
                     continue
-                pages = PAGE_RE.findall(body[: heading.start()])
+                pages = PAGE_RE.findall(body[: table_match.start()])
                 page = pages[-1] if pages else None
-                between = body[heading.end() : table_match.start()]
                 unit = next(
                     (line.strip(" *") for line in between.splitlines() if "million" in line.casefold() or "thousand" in line.casefold()),
                     "",
                 )
                 source = self._source("S1", parent_id, metadata, table_match.group(), page)
                 answer = f"## {title}\n\n{unit}\n\n{markdown}\n\n[S1]" if unit else f"## {title}\n\n{markdown}\n\n[S1]"
-                score = (len(matched) / len(heading_terms), len(matched), len(markdown))
-                candidates.append((score, DirectAnswer(answer, [source], "exact_table")))
-        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+                score = (len(matched) / len(requested_terms), len(matched) / len(title_terms))
+                candidate = (score, DirectAnswer(answer, [source], "exact_table"))
+                if markdown not in candidates or score > candidates[markdown][0]:
+                    candidates[markdown] = candidate
+        ranked = sorted(candidates.values(), key=lambda item: item[0], reverse=True)
+        if not ranked or (len(ranked) > 1 and ranked[0][0] == ranked[1][0]):
+            return None
+        return ranked[0][1]
 
     def _items(self, scope: Scope) -> DirectAnswer | None:
         group = self._group(scope)

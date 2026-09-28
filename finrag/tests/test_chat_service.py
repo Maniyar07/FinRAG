@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.app.chat_service import ChatService
 from src.app.response_composer import (
@@ -16,7 +17,7 @@ from src.financial.models import ValueType
 from src.orchestration.models import EvidenceType
 from src.retrieval.semantic_query_parser import SemanticQueryResult
 from src.retrieval.structured_lookup import DirectAnswer, VerifiedTableRow
-from src.schemas import Decision, RetrievalBundle, Scope
+from src.schemas import ChatResult, Decision, RetrievalBundle, Scope
 from src.tools.document_search import DocumentSearchTool
 
 
@@ -97,6 +98,34 @@ def _service(*, semantic_parser=None) -> ChatService:
 
 
 class ChatServiceOrchestrationTests(unittest.TestCase):
+    def test_langchain_backend_routes_multihop_without_legacy_planner(self) -> None:
+        service = _service()
+        service.agent_backend = "langchain"
+        service.multihop_executor = object()
+        expected = ChatResult(
+            Decision.ANSWERED,
+            "Agent answer.",
+            Scope(("MSFT",), ("2025",), "10K"),
+        )
+        fake_agent = SimpleNamespace(run=lambda **_: expected)
+
+        with patch(
+            "src.app.chat_service.LangChainReActAgent",
+            return_value=fake_agent,
+        ) as agent_class:
+            result = service._run_multihop(
+                question="Compare the requested values.",
+                scope=expected.scope,
+                inherited_fields=(),
+                history=None,
+                query_expansions=(),
+                wants_table=False,
+                trace={"multihop": {}},
+            )
+
+        self.assertIs(result, expected)
+        self.assertIs(agent_class.call_args.kwargs["executor"], service.multihop_executor)
+
     def test_narrative_intent_family_does_not_require_statement_values(self) -> None:
         questions = (
             "What factors affected automotive profitability?",
@@ -318,18 +347,74 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
                 input_fact_ids=("F1", "F2"), result=Decimal("14.93"),
                 result_unit="percent", currency=None, scale=None,
                 source_ids=("S1", "S2"),
+                formula="((new - old) / abs(old)) * 100",
                 operation=SimpleNamespace(value="percentage_change"),
             ),
         )
 
         answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=(calculation,))
+            SimpleNamespace(facts=facts, calculations=(calculation,)),
+            "Calculate the percentage change and show the formula and inputs.",
         )
 
         self.assertIn("USD 245,122 million", answer)
         self.assertIn("USD 281,724 million", answer)
+        self.assertIn("**Formula:** `((new - old) / abs(old)) * 100`", answer)
         self.assertIn("**14.93%**", answer)
         self.assertNotIn("MSFT revenue change:", answer)
+
+    def test_verified_calculation_displays_an_intermediate_result_operand(self) -> None:
+        facts = (
+            SimpleNamespace(
+                fact_id="F1", ticker="MSFT", metric="Cash",
+                period="2025", raw_value="30,242", source_id="S1",
+                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
+            ),
+            SimpleNamespace(
+                fact_id="F2", ticker="MSFT", metric="Investments",
+                period="2025", raw_value="64,323", source_id="S1",
+                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
+            ),
+            SimpleNamespace(
+                fact_id="F3", ticker="MSFT", metric="Current liabilities",
+                period="2025", raw_value="141,218", source_id="S1",
+                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
+            ),
+        )
+        calculations = (
+            SimpleNamespace(
+                calculation_id="cash_sum",
+                label="MSFT numerator sum",
+                result=SimpleNamespace(
+                    input_fact_ids=("F1", "F2"), result=Decimal("94565"),
+                    result_unit="currency", currency="USD", scale="millions",
+                    source_ids=("S1",), formula="sum(values)",
+                    operation=SimpleNamespace(value="sum"),
+                ),
+            ),
+            SimpleNamespace(
+                calculation_id="liquidity_ratio",
+                label="MSFT liquidity coverage ratio",
+                result=SimpleNamespace(
+                    input_fact_ids=("cash_sum", "F3"),
+                    result=Decimal("0.669638431361441176"),
+                    result_unit="ratio", currency=None, scale=None,
+                    source_ids=("S1",), formula="numerator / denominator",
+                    operation=SimpleNamespace(value="ratio"),
+                ),
+            ),
+        )
+
+        answer = verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=calculations),
+            "Calculate the liquidity ratio and show every input and formula.",
+        )
+
+        self.assertIn("USD 94,565 million", answer)
+        self.assertIn("USD 141,218 million", answer)
+        self.assertIn("`sum(values)`", answer)
+        self.assertIn("`numerator / denominator`", answer)
+        self.assertIn("**0.67 ratio**", answer)
 
     def test_net_profit_margin_ratio_is_presented_as_a_percentage(self) -> None:
         facts = (
@@ -365,6 +450,40 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertIn("**Total revenues (2025):** USD 94,827 million", answer)
         self.assertIn("**4.07%**", answer)
         self.assertNotIn("0.04 ratio", answer)
+
+    def test_cross_company_difference_labels_each_ticker(self) -> None:
+        facts = (
+            SimpleNamespace(
+                fact_id="F1", ticker="AAA", metric="Total revenue", period="2025",
+                raw_value="281,724", source_id="S1", value_type=ValueType.CURRENCY,
+                currency="USD", scale="millions",
+            ),
+            SimpleNamespace(
+                fact_id="F2", ticker="BBB", metric="Total revenues", period="2025",
+                raw_value="94,827", source_id="S2", value_type=ValueType.CURRENCY,
+                currency="USD", scale="millions",
+            ),
+        )
+        calculation = SimpleNamespace(
+            label="AAA minus BBB total revenue",
+            result=SimpleNamespace(
+                input_fact_ids=("F1", "F2"), result=Decimal("186897"),
+                result_unit="currency", currency="USD", scale="millions",
+                source_ids=("S1", "S2"),
+                operation=SimpleNamespace(value="difference"),
+            ),
+        )
+
+        answer = verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=(calculation,)),
+            "Compare AAA and BBB total revenue and calculate the difference.",
+        )
+
+        self.assertIn("#### AAA vs BBB - Total revenue", answer)
+        self.assertIn("**AAA (2025):** USD 281,724 million [S1]", answer)
+        self.assertIn("**BBB (2025):** USD 94,827 million [S2]", answer)
+        self.assertIn("**Difference:** **USD 186,897 million**", answer)
+        self.assertNotIn("#### AAA - Total revenue", answer)
 
     def test_calculation_summary_omits_unrequested_winner(self) -> None:
         facts = (
@@ -755,6 +874,9 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(result.decision, Decision.ANSWERED)
         self.assertTrue(result.trace["multihop"]["selected"])
+        self.assertTrue(result.trace["agent"]["selected"])
+        self.assertEqual(result.trace["agent"]["protocol"], "reason_act_observe")
+        self.assertEqual(result.trace["agent"]["status"], "completed")
         self.assertEqual(service.retriever.calls, [])
         self.assertEqual(len(service.multihop_planner.calls), 1)
         self.assertEqual(len(service.multihop_executor.calls), 1)

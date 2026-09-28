@@ -155,14 +155,18 @@ class EvidenceMerger:
         if not selected_ids:
             selected_ids = {fact.source_id for fact in facts}
 
-        narrative_counts: dict[tuple[str, str], int] = {}
+        narrative_counts: dict[tuple[str, str, str], int] = {}
         for source in self.sources:
             if not any(
                 role.get("evidence_type") == "narrative"
                 for role in source.get("evidence_requirements") or []
             ):
                 continue
-            key = (str(source.get("ticker")), str(source.get("fiscal_year")))
+            key = (
+                str(source.get("ticker")),
+                str(source.get("fiscal_year")),
+                normalize_doc_type(source.get("doc_type")),
+            )
             if narrative_counts.get(key, 0) < 3:
                 selected_ids.add(str(source["id"]))
                 narrative_counts[key] = narrative_counts.get(key, 0) + 1

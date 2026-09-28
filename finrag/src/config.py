@@ -64,6 +64,9 @@ MULTIHOP_MAX_SEARCHES = int(os.getenv("FINRAG_MULTIHOP_MAX_SEARCHES", "4"))
 MULTIHOP_MAX_CALCULATIONS = int(
     os.getenv("FINRAG_MULTIHOP_MAX_CALCULATIONS", "6")
 )
+AGENT_BACKEND = os.getenv("FINRAG_AGENT_BACKEND", "langchain").strip().casefold()
+AGENT_MAX_ACTIONS = int(os.getenv("FINRAG_AGENT_MAX_ACTIONS", "8"))
+AGENT_TIMEOUT_SECONDS = float(os.getenv("FINRAG_AGENT_TIMEOUT_SECONDS", "30"))
 
 
 @dataclass(frozen=True)
@@ -133,10 +136,15 @@ def validate_runtime_config(
         ("FINRAG_MAX_CONTEXT_CHARS", MAX_CONTEXT_CHARS),
         ("FINRAG_MULTIHOP_MAX_SEARCHES", MULTIHOP_MAX_SEARCHES),
         ("FINRAG_MULTIHOP_MAX_CALCULATIONS", MULTIHOP_MAX_CALCULATIONS),
+        ("FINRAG_AGENT_MAX_ACTIONS", AGENT_MAX_ACTIONS),
     )
     for name, value in positive_values:
         if value <= 0:
             raise ValueError(f"{name} must be positive.")
+    if AGENT_BACKEND not in {"bounded", "langchain"}:
+        raise ValueError("FINRAG_AGENT_BACKEND must be 'bounded' or 'langchain'.")
+    if AGENT_TIMEOUT_SECONDS <= 0:
+        raise ValueError("FINRAG_AGENT_TIMEOUT_SECONDS must be positive.")
 
     splitters = (
         ("10-K parent", PARENT_TOKENS_10K, PARENT_OVERLAP_10K),

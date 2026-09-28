@@ -6,6 +6,7 @@ import re
 
 from src.financial.calculator import CalculationOperation
 from src.orchestration.models import (
+    CalculationReference,
     EvidenceGroup,
     EvidenceRequirement,
     EvidenceType,
@@ -95,6 +96,94 @@ def allowed_document_types(scope: Scope) -> frozenset[str]:
     if scope.doc_type:
         return frozenset((scope.doc_type,))
     return frozenset(("10K", "TRANSCRIPT"))
+
+
+def staged_sum_ratio_plan(*, question: str, permitted_scope: Scope) -> MultiHopPlan:
+    """Plan the generic `(A + B + ...) / C` staged-arithmetic shape."""
+    match = re.search(
+        r"\bfirst\s+calculate\s+(?P<sum>.+?)\.\s*then\s+use\s+"
+        r"(?:that|the)\s+calculated\s+sum\s+as\s+the\s+numerator\s+and\s+"
+        r"(?P<denominator>.+?)\s+as\s+the\s+denominator\b",
+        question,
+        re.IGNORECASE,
+    )
+    if match is None:
+        raise ValueError("Question is not a staged sum-ratio request.")
+    numerator_metrics = tuple(
+        value.strip(" ,.;")
+        for value in re.split(r"\s+plus\s+", match.group("sum"), flags=re.IGNORECASE)
+        if value.strip(" ,.;")
+    )
+    denominator_metric = match.group("denominator").strip(" ,.;")
+    if len(numerator_metrics) < 2 or not denominator_metric:
+        raise ValueError("Staged sum-ratio inputs are incomplete.")
+
+    def identifier(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")[:40]
+
+    groups = tuple(
+        EvidenceGroup(ticker=ticker, fiscal_year=year)
+        for ticker, year in permitted_scope.groups
+    )
+    document_type = (
+        "10K" if "10K" in allowed_document_types(permitted_scope)
+        else next(iter(allowed_document_types(permitted_scope)))
+    )
+    metrics = (*numerator_metrics, denominator_metric)
+    requirements = tuple(
+        EvidenceRequirement(
+            requirement_id=f"reported_{identifier(metric)}",
+            question=(
+                f"Find the exact reported {metric} table row for every requested "
+                "company and fiscal year, preserving period, units, and scale."
+            ),
+            evidence_type=EvidenceType.NUMERIC,
+            document_type=document_type,
+            groups=groups,
+        )
+        for metric in metrics
+    )
+    calculations: list[PlannedCalculation] = []
+    for group in groups:
+        prefix = f"{group.ticker.casefold()}_{group.fiscal_year}"
+        sum_id = f"{prefix}_sum"
+        calculations.append(
+            PlannedCalculation(
+                calculation_id=sum_id,
+                label=f"{group.ticker} {group.fiscal_year} numerator sum",
+                operation=CalculationOperation.SUM,
+                inputs=tuple(
+                    FactReference(
+                        requirement_id=f"reported_{identifier(metric)}",
+                        ticker=group.ticker,
+                        fiscal_year=group.fiscal_year,
+                        metric_hint=metric,
+                    )
+                    for metric in numerator_metrics
+                ),
+            )
+        )
+        calculations.append(
+            PlannedCalculation(
+                calculation_id=f"{prefix}_ratio",
+                label=f"{group.ticker} {group.fiscal_year} requested ratio",
+                operation=CalculationOperation.RATIO,
+                inputs=(
+                    CalculationReference(calculation_id=sum_id),
+                    FactReference(
+                        requirement_id=f"reported_{identifier(denominator_metric)}",
+                        ticker=group.ticker,
+                        fiscal_year=group.fiscal_year,
+                        metric_hint=denominator_metric,
+                    ),
+                ),
+            )
+        )
+    return MultiHopPlan(
+        original_question=question,
+        requirements=requirements,
+        calculations=tuple(calculations),
+    )
 
 
 def _mixed_source_change_fallback(

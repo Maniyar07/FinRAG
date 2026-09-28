@@ -439,6 +439,146 @@ def _sanitize_trace(trace: object) -> dict[str, Any]:
             "selected": bool(multihop.get("selected")),
         }
 
+    agent = trace.get("agent")
+    if isinstance(agent, dict):
+        agent_view: dict[str, Any] = {
+            "name": _clean_text(agent.get("name"), max_length=80),
+            "framework": _clean_text(agent.get("framework"), max_length=80),
+            "backend": _clean_text(agent.get("backend"), max_length=40),
+            "protocol": _clean_text(agent.get("protocol"), max_length=80),
+            "selected": bool(agent.get("selected")),
+            "status": _clean_text(agent.get("status"), max_length=40),
+            "route": _clean_text(agent.get("route"), max_length=80),
+            "tools": [str(item)[:80] for item in agent.get("tools", [])[:6]],
+            "max_actions": max(0, int(agent.get("max_actions", 0) or 0)),
+            "actions_used": max(0, int(agent.get("actions_used", 0) or 0)),
+            "stop_reason": _clean_text(agent.get("stop_reason"), max_length=120),
+        }
+        checklist = agent.get("task_checklist")
+        if isinstance(checklist, dict):
+            agent_view["task_checklist"] = {
+                "requirements": [
+                    {
+                        "requirement_id": _clean_text(
+                            item.get("requirement_id"), max_length=64
+                        ),
+                        "evidence_type": _clean_text(
+                            item.get("evidence_type"), max_length=32
+                        ),
+                        "document_type": _clean_text(
+                            item.get("document_type"), max_length=32
+                        ),
+                    }
+                    for item in checklist.get("requirements", [])[:8]
+                    if isinstance(item, dict)
+                ],
+                "calculations": [
+                    {
+                        "calculation_id": _clean_text(
+                            item.get("calculation_id"), max_length=64
+                        ),
+                        "operation": _clean_text(
+                            item.get("operation"), max_length=80
+                        ),
+                    }
+                    for item in checklist.get("calculations", [])[:8]
+                    if isinstance(item, dict)
+                ],
+            }
+        event_views: list[dict[str, Any]] = []
+        for event in agent.get("events", [])[:16]:
+            if not isinstance(event, dict):
+                continue
+            reason = event.get("reason") if isinstance(event.get("reason"), dict) else {}
+            action = event.get("action") if isinstance(event.get("action"), dict) else {}
+            arguments = (
+                action.get("arguments")
+                if isinstance(action.get("arguments"), dict)
+                else {}
+            )
+            observation = (
+                event.get("observation")
+                if isinstance(event.get("observation"), dict)
+                else {}
+            )
+            event_views.append(
+                {
+                    "step": max(0, int(event.get("step", 0) or 0)),
+                    "reason": {
+                        "decision": _clean_text(
+                            reason.get("decision"), max_length=80
+                        ),
+                        "evidence_type": _clean_text(
+                            reason.get("evidence_type"), max_length=40
+                        ),
+                        "operation": _clean_text(
+                            reason.get("operation"), max_length=80
+                        ),
+                    },
+                    "action": {
+                        "tool": _clean_text(action.get("tool"), max_length=80),
+                        "arguments": {
+                            "requirement_id": _clean_text(
+                                arguments.get("requirement_id"), max_length=64
+                            ),
+                            "calculation_id": _clean_text(
+                                arguments.get("calculation_id"), max_length=64
+                            ),
+                            "document_type": _clean_text(
+                                arguments.get("document_type"), max_length=32
+                            ),
+                            "evidence_type": _clean_text(
+                                arguments.get("evidence_type"), max_length=32
+                            ),
+                            "operation": _clean_text(
+                                arguments.get("operation"), max_length=80
+                            ),
+                            "input_fact_ids": [
+                                str(item)[:80]
+                                for item in arguments.get("input_fact_ids", [])[:20]
+                            ],
+                            "groups": [
+                                [str(part)[:64] for part in group[:2]]
+                                for group in arguments.get("groups", [])[:24]
+                                if isinstance(group, (list, tuple))
+                            ],
+                        },
+                    },
+                    "observation": {
+                        "status": _clean_text(
+                            observation.get("status"), max_length=80
+                        ),
+                        "retrieval_mode": _clean_text(
+                            observation.get("retrieval_mode"), max_length=80
+                        ),
+                        "candidate_count": max(
+                            0, int(observation.get("candidate_count", 0) or 0)
+                        ),
+                        "source_ids": [
+                            str(item)[:32]
+                            for item in observation.get("source_ids", [])[:24]
+                        ],
+                        "fact_ids": [
+                            str(item)[:80]
+                            for item in observation.get("fact_ids", [])[:24]
+                        ],
+                        "missing_groups": [
+                            [str(part)[:64] for part in group[:2]]
+                            for group in observation.get("missing_groups", [])[:24]
+                            if isinstance(group, (list, tuple))
+                        ],
+                        "result": _clean_text(
+                            observation.get("result"), max_length=120
+                        ),
+                        "result_unit": _clean_text(
+                            observation.get("result_unit"), max_length=80
+                        ),
+                    },
+                }
+            )
+        agent_view["events"] = event_views
+        sanitized["agent"] = agent_view
+
     retrieval = trace.get("retrieval")
     if isinstance(retrieval, dict):
         retrieval_view: dict[str, Any] = {

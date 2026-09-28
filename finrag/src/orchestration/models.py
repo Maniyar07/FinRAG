@@ -172,13 +172,28 @@ class FactReference(OrchestrationModel):
         return year
 
 
+class CalculationReference(OrchestrationModel):
+    """Use one completed calculation as an input to a later calculation."""
+
+    calculation_id: str
+
+    @field_validator("calculation_id")
+    @classmethod
+    def validate_calculation_id(cls, value: str) -> str:
+        if not REQUIREMENT_ID_RE.fullmatch(value):
+            raise ValueError("calculation_id has an invalid format")
+        return value
+
+
 class PlannedCalculation(OrchestrationModel):
     """A calculation whose ordered fact references are bound during execution."""
 
     calculation_id: str
     label: str = Field(min_length=3, max_length=300)
     operation: CalculationOperation
-    inputs: tuple[FactReference, ...] = Field(min_length=1, max_length=20)
+    inputs: tuple[FactReference | CalculationReference, ...] = Field(
+        min_length=1, max_length=20
+    )
     periods: Decimal | None = Field(default=None, gt=0)
 
     @field_validator("calculation_id")
@@ -235,8 +250,15 @@ class MultiHopPlan(OrchestrationModel):
         if len(calculation_ids) != len(set(calculation_ids)):
             raise ValueError("calculation IDs must be unique")
 
+        completed_calculation_ids: set[str] = set()
         for calculation in self.calculations:
             for reference in calculation.inputs:
+                if isinstance(reference, CalculationReference):
+                    if reference.calculation_id not in completed_calculation_ids:
+                        raise ValueError(
+                            "calculation references an unknown or later calculation"
+                        )
+                    continue
                 requirement = requirement_map.get(reference.requirement_id)
                 if requirement is None:
                     raise ValueError(
@@ -251,4 +273,5 @@ class MultiHopPlan(OrchestrationModel):
                     raise ValueError(
                         "calculation fact reference is outside its requirement groups"
                     )
+            completed_calculation_ids.add(calculation.calculation_id)
         return self

@@ -17,8 +17,9 @@ from src.generation.answer_guardrails import (
     scope_coverage_message,
 )
 from src.ingestion.manifest import available_keys, load_manifest
-from src.config import LOGS_DIR, MULTIHOP_ENABLED, get_index_paths
-from src.app.multihop_coordinator import MultiHopCoordinator
+from src.config import AGENT_BACKEND, LOGS_DIR, MULTIHOP_ENABLED, get_index_paths
+from src.app.langchain_react_agent import LangChainReActAgent
+from src.app.multihop_coordinator import BoundedReActAgent
 from src.app.response_composer import (
     requires_verified_statement_values,
     verified_statement_answer_text,
@@ -101,8 +102,11 @@ class ChatService:
             self.generator = AnswerGenerator()
             self.semantic_parser = build_semantic_query_parser_from_environment()
             self.multihop_enabled = MULTIHOP_ENABLED
+            self.agent_backend = AGENT_BACKEND
             self.multihop_planner = (
-                MultiHopPlanner() if self.multihop_enabled else None
+                MultiHopPlanner()
+                if self.multihop_enabled
+                else None
             )
             self.multihop_executor = (
                 MultiHopExecutor(
@@ -263,11 +267,32 @@ class ChatService:
         wants_table: bool,
         trace: dict,
     ) -> ChatResult:
-        planner = getattr(self, "multihop_planner", None)
         executor = getattr(self, "multihop_executor", None)
-        if planner is None or executor is None:
+        if executor is None:
             raise RuntimeError("Multi-hop orchestration is enabled but not initialized.")
-        coordinator = MultiHopCoordinator(
+        if getattr(self, "agent_backend", "bounded") == "langchain":
+            planner = getattr(self, "multihop_planner", None)
+            agent = LangChainReActAgent(
+                planner=planner,
+                executor=executor,
+                generator=self.generator,
+                record=self._record,
+                retrieval_source_trace=self._retrieval_source_trace,
+            )
+            return agent.run(
+                question=question,
+                scope=scope,
+                inherited_fields=inherited_fields,
+                history=history,
+                query_expansions=query_expansions,
+                wants_table=wants_table,
+                trace=trace,
+            )
+
+        planner = getattr(self, "multihop_planner", None)
+        if planner is None:
+            raise RuntimeError("Bounded multi-hop planner is not initialized.")
+        agent = BoundedReActAgent(
             planner=planner,
             executor=executor,
             document_search_tool=self.document_search_tool,
@@ -276,7 +301,7 @@ class ChatService:
             record=self._record,
             retrieval_source_trace=self._retrieval_source_trace,
         )
-        return coordinator.run(
+        return agent.run(
             question=question,
             scope=scope,
             inherited_fields=inherited_fields,
@@ -300,6 +325,19 @@ class ChatService:
             "question": question.strip()[:1000],
             "retrieval_pipeline": ["dense", "bm25", "rrf", "optional_cohere_rerank"],
             "reranker": self._reranker_trace(),
+            "agent": {
+                "name": (
+                    "langchain_financial_react"
+                    if getattr(self, "agent_backend", AGENT_BACKEND) == "langchain"
+                    else "bounded_financial_react"
+                ),
+                "protocol": "reason_act_observe",
+                "selected": False,
+                "status": "not_required",
+                "route": "optimized_single_hop",
+                "tools": ["document_search", "financial_calculator"],
+                "backend": getattr(self, "agent_backend", AGENT_BACKEND),
+            },
         }
         question = question.strip()
         if not question:

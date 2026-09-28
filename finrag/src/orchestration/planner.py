@@ -10,12 +10,13 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.config import MULTIHOP_MAX_CALCULATIONS, MULTIHOP_MAX_SEARCHES
 from src.generation.llm_engine import get_llm_engine
-from src.orchestration.models import MultiHopPlan
+from src.orchestration.models import CalculationReference, MultiHopPlan
 from src.orchestration.plan_builders import (
     _comparison_fallback,
     _margin_fallback,
     _mixed_source_change_fallback,
     allowed_document_types as _allowed_document_types,
+    staged_sum_ratio_plan,
 )
 from src.orchestration.plan_payload import (
     CALCULATION_INTENT_RE,
@@ -49,6 +50,10 @@ Rules:
 6. Add calculations only when the user requests or necessarily implies arithmetic.
    Calculation inputs are ordered: old/new for changes, numerator/denominator for
    ratios, start/end for CAGR, and minuend/subtrahend for differences.
+   For multi-stage arithmetic, create each calculation in dependency order and use
+   a calculation input object containing only calculation_id when a later calculation
+   consumes an earlier result. Retrieve every source value separately; never ask a
+   numeric evidence requirement to calculate a sum, ratio, or derived metric.
 7. Each calculation input must reference a numeric requirement and one of that
    requirement's exact company/source-fiscal-year groups. fiscal_year identifies the
    source filing or transcript. period identifies the requested fact/table period and
@@ -113,6 +118,25 @@ def validate_plan_scope(plan: MultiHopPlan, permitted_scope: Scope) -> None:
             )
 
 
+def validate_plan_completion(plan: MultiHopPlan, question: str) -> None:
+    """Require an explicit dependency when the user requests staged arithmetic."""
+    if not re.search(
+        r"\b(?:then\s+use|use\s+(?:that|the)\s+(?:calculated\s+)?(?:sum|result))\b",
+        question,
+        re.IGNORECASE,
+    ):
+        return
+    if len(plan.calculations) < 2 or not any(
+        isinstance(value, CalculationReference)
+        for calculation in plan.calculations
+        for value in calculation.inputs
+    ):
+        raise ValueError(
+            "Staged arithmetic requires an intermediate calculation and an explicit "
+            "calculation_id dependency."
+        )
+
+
 class MultiHopPlanner:
     """Produce a validated plan without granting the model control over scope."""
     _mixed_source_change_fallback = staticmethod(_mixed_source_change_fallback)
@@ -164,6 +188,19 @@ class MultiHopPlanner:
             raise ValueError("Multi-hop planning question exceeds 6000 characters.")
         if not permitted_scope.complete:
             raise ValueError("Multi-hop planning requires a complete scope.")
+
+        if re.search(
+            r"\bfirst\s+calculate\b.+\bthen\s+use\b.+\bnumerator\b.+\bdenominator\b",
+            cleaned,
+            re.IGNORECASE,
+        ):
+            plan = staged_sum_ratio_plan(
+                question=cleaned,
+                permitted_scope=permitted_scope,
+            )
+            validate_plan_scope(plan, permitted_scope)
+            validate_plan_completion(plan, cleaned)
+            return plan
 
         if (
             {"10K", "TRANSCRIPT"}.issubset(_allowed_document_types(permitted_scope))
@@ -231,6 +268,7 @@ class MultiHopPlanner:
                     calculations=tuple(parsed.calculations),
                 )
                 validate_plan_scope(plan, permitted_scope)
+                validate_plan_completion(plan, cleaned)
                 return plan
             except Exception as error:
                 last_error = error

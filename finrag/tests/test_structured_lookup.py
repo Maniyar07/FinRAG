@@ -6,6 +6,66 @@ from src.retrieval.structured_lookup import StructuredDocumentLookup
 from src.schemas import Scope
 
 
+def test_caption_selects_supplement_instead_of_similar_statement(tmp_path) -> None:
+    _parent(
+        tmp_path, "leases", ticker="ACME", item="Item 8", section="Notes",
+        body=(
+            "## BALANCE SHEETS\n(In millions)\n"
+            "<table><tr><th>Assets</th><th>2025</th></tr>"
+            "<tr><td>Operating lease assets</td><td>100</td></tr></table>\n"
+            "## NOTE 7 - LEASES\n"
+            "Lease expense was as follows:\n\n"
+            "<table><tr><th>Expense</th><th>2025</th></tr>"
+            "<tr><td>Operating leases</td><td>10</td></tr></table>\n\n"
+            "Supplemental balance sheet information related to leases was as follows:\n\n"
+            "<table><tr><th>Metric</th><th>2025</th></tr>"
+            "<tr><td>Finance lease liabilities</td><td>80</td></tr></table>"
+        ),
+    )
+    result = StructuredDocumentLookup(tmp_path).answer(
+        "Give me the exact table of supplemental balance sheet information "
+        "related to leases exactly from ACME 2025 10-K",
+        Scope(("ACME",), ("2025",), "10K"), wants_complete_table=True,
+    )
+
+    assert result is not None
+    assert "| Finance lease liabilities | 80 |" in result.answer
+    assert "| Operating lease assets | 100 |" not in result.answer
+    assert "| Operating leases | 10 |" not in result.answer
+
+
+def test_table_selection_rejects_missing_subject_and_ambiguous_matches(tmp_path) -> None:
+    for number, value in enumerate((100, 200)):
+        _parent(
+            tmp_path, f"balance-{number}", item="Item 8", section="Statements",
+            body=("## BALANCE SHEETS\n"
+                  "<table><tr><th>Metric</th><th>2025</th></tr>"
+                  f"<tr><td>Total assets</td><td>{value}</td></tr></table>"),
+        )
+    lookup = StructuredDocumentLookup(tmp_path)
+    scope = Scope(("MSFT",), ("2025",), "10K")
+    for question in (
+        "Show the exact supplemental balance sheet table related to leases",
+        "Show the exact balance sheet table",
+    ):
+        assert lookup.answer(question, scope, wants_complete_table=True) is None
+
+
+def test_plain_caption_matches_a_different_table_subject(tmp_path) -> None:
+    _parent(
+        tmp_path, "maturities", item="Item 8", section="Notes",
+        body=("Future debt maturities were as follows:\n\n"
+              "<table><tr><th>Year</th><th>Amount</th></tr>"
+              "<tr><td>2026</td><td>75</td></tr></table>"),
+    )
+    result = StructuredDocumentLookup(tmp_path).answer(
+        "Show the complete future debt maturities table",
+        Scope(("MSFT",), ("2025",), "10K"), wants_complete_table=True,
+    )
+    assert result is not None
+    assert "| 2026 | 75 |" in result.answer
+
+
 def _parent(
     root, name: str, *, body: str, item: str, section: str,
     ticker: str = "MSFT", year: str = "2025",

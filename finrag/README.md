@@ -456,7 +456,7 @@ and document type without losing earlier fields; retrieval and answer generation
 continue to use the original financial question. A new substantive question or a
 filter change clears the pending state.
 
-### Optional multi-hop questions
+### Official LangChain ReAct agent for multi-hop questions
 
 Multi-hop orchestration is disabled by default so an existing deployment keeps its
 current latency and model-call profile. Enable it after running the test suite and a
@@ -464,14 +464,35 @@ representative evaluation against the active index:
 
 ```dotenv
 FINRAG_MULTIHOP_ENABLED=true
+FINRAG_AGENT_BACKEND=langchain
+FINRAG_AGENT_MAX_ACTIONS=8
+FINRAG_AGENT_TIMEOUT_SECONDS=30
 FINRAG_MULTIHOP_MAX_SEARCHES=4
 FINRAG_MULTIHOP_MAX_CALCULATIONS=6
 ```
 
-When enabled, simple questions, ordinary comparisons, and complete-table requests
-retain the single-search path. Questions requesting arithmetic or multiple tasks
-use a bounded structured plan. Each requirement searches one document type across
-exact company/year groups.
+When enabled, simple questions and complete-table requests retain the optimized
+single-hop path. Questions requesting arithmetic or multiple tasks can use the
+official `langchain.agents.create_agent` model/tool loop. Each request receives two
+scope-bound business tools, `search_financial_documents` and `financial_calculator`,
+plus a control-only `complete_research` terminal tool. The
+search tool delegates to the existing multi-hop executor, so hybrid retrieval,
+reranking, compression, fact validation, and citation handling are reused rather
+than duplicated. The calculator accepts only validated fact IDs returned by search.
+The agent cannot widen the resolved scope, access the web, execute code, or calculate
+from arbitrary model text. The trace records tool actions and compact observations,
+not hidden model reasoning.
+
+`FINRAG_AGENT_BACKEND=bounded` keeps the previous typed planner/executor workflow as
+a rollback path during evaluation. Do not delete it until the LangChain backend has
+passed the same regression and representative-query evaluation set.
+
+Each evidence requirement searches one document type across exact company/year
+groups. An exact indexed statement row is used when it completely satisfies a
+numeric requirement; other evidence actions use the existing dense + BM25 + RRF
+pipeline, optional Cohere reranking, parent retrieval, and context compression.
+Calculation actions accept only validated fact IDs. The configured search and
+calculation limits form the agent's hard action budget.
 Numeric requirements pass through extraction, normalization, and deterministic
 source validation; calculations accept only validated fact IDs. Evidence from all
 searches is deduplicated and assigned globally unique `S#` IDs. For calculated
@@ -656,8 +677,10 @@ fiscal year, and evidence basis explicit.
   a worker thread.
 - Local browser history and theme preferences live in `localStorage`; the backend
   does not provide user accounts or persistent conversation storage.
-- Phase 1 does not include autonomous agents, SQL tools, or live financial-data
-  connectors. Its calculator is limited to validated retrieved figures.
+- Phase 1 includes one bounded, scope-locked ReAct agent for compound document
+  research. It does not include open-ended autonomous agents, SQL tools, or live
+  financial-data connectors. Its calculator is limited to validated retrieved
+  figures.
 - No software license is currently included in this repository. Add one before public
   redistribution.
 

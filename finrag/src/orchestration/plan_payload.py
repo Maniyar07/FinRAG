@@ -268,6 +268,7 @@ def parse_plan_payload(payload: Any, *, question: str) -> PlanPayload:
             "period",
             "metric_hint",
         }
+        calculation_reference_fields = {"calculation_id"}
         valid_operations = {operation.value for operation in CalculationOperation}
         used_calculation_ids: set[str] = set()
         for index, item in enumerate(raw_calculations, start=1):
@@ -300,6 +301,18 @@ def parse_plan_payload(payload: Any, *, question: str) -> PlanPayload:
             for raw_input in raw_inputs:
                 if not isinstance(raw_input, dict):
                     raise original_error
+                if raw_input.get("calculation_id") and not any(
+                    raw_input.get(field)
+                    for field in ("requirement_id", "ticker", "fiscal_year")
+                ):
+                    normalized_inputs.append(
+                        {
+                            key: value
+                            for key, value in raw_input.items()
+                            if key in calculation_reference_fields
+                        }
+                    )
+                    continue
                 normalized = {
                     key: value
                     for key, value in raw_input.items()

@@ -6,6 +6,7 @@ from src.orchestration.executor import (
     MultiHopExecutor,
 )
 from src.orchestration.models import (
+    CalculationReference,
     EvidenceGroup,
     EvidenceRequirement,
     EvidenceType,
@@ -22,6 +23,7 @@ from src.orchestration.planner import (
 )
 
 __all__ = [
+    "CalculationReference",
     "ExecutedCalculation",
     "EvidenceGroup",
     "EvidenceRequirement",

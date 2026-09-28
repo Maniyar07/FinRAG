@@ -30,14 +30,40 @@ MONEY_CLAIM_RE = re.compile(
 )
 
 
+class GroundedClaim(BaseModel):
+    """One narrative claim with explicit supporting retrieval sources."""
+
+    text: str = Field(min_length=1, max_length=2_000)
+    source_ids: list[str] = Field(min_length=1, max_length=12)
+
+
 class GroundedAnswer(BaseModel):
     """Structured model output used to separate prose from citation identity."""
 
-    answer: str = Field(description="Grounded Markdown answer with inline [S#] citations.")
+    answer: str = Field(
+        default="",
+        description=(
+            "Markdown used for tables or other layout-sensitive answers. Leave empty "
+            "for ordinary narrative answers."
+        ),
+    )
+    claims: list[GroundedClaim] = Field(
+        default_factory=list,
+        max_length=24,
+        description=(
+            "Atomic narrative claims. Every claim carries its own supporting source IDs."
+        ),
+    )
     source_ids: list[str] = Field(
         default_factory=list,
         description="Unique retrieved source IDs used in the answer, for example S1 and S3.",
     )
+
+
+class GroundedNarrativeAnswer(BaseModel):
+    """Narrative-only output: citations are data, never generated markup."""
+
+    claims: list[GroundedClaim] = Field(min_length=1, max_length=24)
 
 
 @dataclass(frozen=True)
@@ -66,19 +92,53 @@ class AnswerGenerator:
             from src.generation.llm_engine import get_llm_engine
             from src.generation.prompt_templates import get_financial_prompt_template
 
-            structured_llm = get_llm_engine().with_structured_output(
+            engine = get_llm_engine()
+            structured_llm = engine.with_structured_output(
                 GroundedAnswer,
                 method="json_schema",
             )
-            chain = get_financial_prompt_template() | structured_llm
+            prompt = get_financial_prompt_template()
+            chain = prompt | structured_llm
+            self.narrative_chain = prompt | engine.with_structured_output(
+                GroundedNarrativeAnswer,
+                method="json_schema",
+            )
+        else:
+            # Injected test/custom chains retain the backward-compatible payload API.
+            self.narrative_chain = chain
         self.chain = chain
 
     @staticmethod
     def _payload_values(payload: Any) -> tuple[str, list[str]]:
         if isinstance(payload, GroundedAnswer):
-            return payload.answer, list(payload.source_ids)
-        if isinstance(payload, dict):
-            return str(payload.get("answer", "")), list(payload.get("source_ids") or [])
+            answer = payload.answer
+            declared = list(payload.source_ids)
+            claims = payload.claims
+        elif isinstance(payload, GroundedNarrativeAnswer):
+            answer = ""
+            declared = []
+            claims = payload.claims
+        elif isinstance(payload, dict):
+            answer = str(payload.get("answer", ""))
+            declared = list(payload.get("source_ids") or [])
+            claims = [
+                GroundedClaim.model_validate(item)
+                for item in (payload.get("claims") or [])
+            ]
+        else:
+            return str(payload), []
+        if claims:
+            lines = []
+            declared = []
+            for claim in claims:
+                text = CITATION_RE.sub("", claim.text).strip()
+                text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+                ids = list(dict.fromkeys(value.upper() for value in claim.source_ids))
+                declared.extend(ids)
+                lines.append(f"- {text} " + "".join(f"[{value}]" for value in ids))
+            return "\n".join(lines), list(dict.fromkeys(declared))
+        if isinstance(payload, (GroundedAnswer, GroundedNarrativeAnswer, dict)):
+            return answer, declared
         return str(payload), []
 
     @staticmethod
@@ -163,26 +223,24 @@ class AnswerGenerator:
         if "transcript" not in question.casefold():
             return None
         source_map = {str(source.get("id", "")).upper(): source for source in sources}
-        company_names = {
-            "MSFT": ("msft", "microsoft"),
-            "TSLA": ("tsla", "tesla"),
-            "JPM": ("jpm", "jpmorgan", "jp morgan"),
-        }
-        narrative_terms = (
-            "attribut",
-            "commentary",
-            "discuss",
-            "driver",
-            "due to",
-            "explain",
-            "highlight",
-            "indicat",
-            "management",
-            "reason",
+        company_names: dict[str, set[str]] = {}
+        for source in sources:
+            ticker = str(source.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            aliases = company_names.setdefault(ticker, {ticker.casefold()})
+            company_name = " ".join(
+                str(source.get("company_name") or "").casefold().split()
+            )
+            if company_name:
+                aliases.add(company_name)
+        transcript_terms = re.compile(
+            r"\b(?:management|earnings\s+call|transcript|prepared\s+remarks)\b",
+            re.IGNORECASE,
         )
         for line in answer.splitlines():
             lowered = line.casefold()
-            if not any(term in lowered for term in narrative_terms):
+            if not transcript_terms.search(lowered):
                 continue
             for ticker, names in company_names.items():
                 if not any(re.search(rf"\b{re.escape(name)}\b", lowered) for name in names):
@@ -219,7 +277,11 @@ class AnswerGenerator:
         sources: list[dict],
     ) -> str | None:
         narrative_groups = {
-            (str(source.get("ticker")), str(source.get("fiscal_year")))
+            (
+                str(source.get("ticker")),
+                str(source.get("fiscal_year")),
+                str(source.get("doc_type") or "").upper().replace("-", ""),
+            )
             for source in sources
             if any(
                 role.get("evidence_type") == "narrative"
@@ -230,7 +292,11 @@ class AnswerGenerator:
             return None
         cited = {value.upper() for value in cited_ids}
         covered = {
-            (str(source.get("ticker")), str(source.get("fiscal_year")))
+            (
+                str(source.get("ticker")),
+                str(source.get("fiscal_year")),
+                str(source.get("doc_type") or "").upper().replace("-", ""),
+            )
             for source in sources
             if str(source.get("id", "")).upper() in cited
             and any(
@@ -240,7 +306,10 @@ class AnswerGenerator:
         }
         missing = sorted(narrative_groups - covered)
         if missing:
-            labels = ",".join(f"{ticker}-{year}" for ticker, year in missing)
+            labels = ",".join(
+                f"{ticker}-{year}-{document_type}"
+                for ticker, year, document_type in missing
+            )
             return f"missing_narrative_citation_groups:{labels}"
         return None
 
@@ -251,8 +320,10 @@ class AnswerGenerator:
         bundle: RetrievalBundle,
         history: list[dict] | None,
         generation_instruction: str,
+        structured_claims: bool = False,
     ) -> tuple[str, list[str]]:
-        payload = self.chain.invoke(
+        chain = self.narrative_chain if structured_claims else self.chain
+        payload = chain.invoke(
             {
                 "question": question,
                 "context": bundle.context,
@@ -276,19 +347,25 @@ class AnswerGenerator:
         verified_rows: tuple[VerifiedTableRow, ...] = (),
     ) -> GenerationResult:
         allowed_ids = ", ".join(str(source["id"]) for source in bundle.sources)
-        narrative_groups: dict[tuple[str, str], list[str]] = {}
+        narrative_groups: dict[tuple[str, str, str], list[str]] = {}
         for source in bundle.sources:
             if not any(
                 role.get("evidence_type") == "narrative"
                 for role in source.get("evidence_requirements") or []
             ):
                 continue
-            key = (str(source.get("ticker")), str(source.get("fiscal_year")))
+            key = (
+                str(source.get("ticker")),
+                str(source.get("fiscal_year")),
+                str(source.get("doc_type") or "").upper().replace("-", ""),
+            )
             narrative_groups.setdefault(key, []).append(str(source["id"]))
         narrative_guide = "; ".join(
-            f"{ticker}-{year}: {', '.join(source_ids)}"
-            for (ticker, year), source_ids in sorted(narrative_groups.items())
+            f"{ticker}-{year}-{document_type}: {', '.join(source_ids)}"
+            for (ticker, year, document_type), source_ids
+            in sorted(narrative_groups.items())
         ) or "not separately tagged"
+        structured_claims = bool(narrative_groups) and not wants_table
         previews: list[str] = []
         last_validation = AnswerValidation(False, UNVERIFIABLE_RESPONSE, "not_attempted")
         previous_answer = ""
@@ -405,6 +482,7 @@ class AnswerGenerator:
                     bundle=bundle,
                     history=history,
                     generation_instruction=instruction,
+                    structured_claims=structured_claims,
                 )
             except Exception as error:
                 error_type = type(error).__name__

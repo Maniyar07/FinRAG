@@ -20,6 +20,7 @@ from src.orchestration.fact_selection import (
     _select_fact,
 )
 from src.orchestration.models import (
+    CalculationReference,
     EvidenceGroup,
     EvidenceRequirement,
     EvidenceType,
@@ -235,6 +236,8 @@ class MultiHopExecutor:
         references_by_requirement: dict[str, tuple[FactReference, ...]] = {}
         for calculation in plan.calculations:
             for reference in calculation.inputs:
+                if isinstance(reference, CalculationReference):
+                    continue
                 references = list(
                     references_by_requirement.get(reference.requirement_id, ())
                 )

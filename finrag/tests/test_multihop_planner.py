@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from src.orchestration.planner import MultiHopPlanner, should_use_multihop
+from src.orchestration.models import CalculationReference
 from src.schemas import Scope
 
 
@@ -29,6 +30,33 @@ def requirement(*, ticker="MSFT", year="2024", document_type="10K") -> dict:
 
 
 class MultiHopPlannerTests(unittest.TestCase):
+    def test_staged_sum_ratio_builds_explicit_intermediate_dependency(self) -> None:
+        chain = FakeChain({})
+        planner = MultiHopPlanner(chain=chain)
+        question = (
+            "Using Acme's 2025 10-K, first calculate cash plus investments. "
+            "Then use that calculated sum as the numerator and current liabilities "
+            "as the denominator to calculate the liquidity ratio."
+        )
+
+        plan = planner.plan(
+            question=question,
+            permitted_scope=Scope(("ACME",), ("2025",), "10K"),
+        )
+
+        self.assertEqual(chain.calls, [])
+        self.assertEqual(len(plan.requirements), 3)
+        self.assertEqual(len(plan.calculations), 2)
+        self.assertEqual(plan.calculations[0].operation.value, "sum")
+        self.assertEqual(plan.calculations[1].operation.value, "ratio")
+        self.assertIsInstance(
+            plan.calculations[1].inputs[0], CalculationReference
+        )
+        self.assertEqual(
+            plan.calculations[1].inputs[0].calculation_id,
+            plan.calculations[0].calculation_id,
+        )
+
     def test_net_margin_uses_formula_plan_with_metric_bound_inputs(self) -> None:
         chain = FakeChain({})
         planner = MultiHopPlanner(chain=chain)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from src.config import MULTIHOP_MAX_CALCULATIONS, MULTIHOP_MAX_SEARCHES
 from src.app.response_composer import (
     verified_calculation_partial,
     verified_calculation_text,
@@ -23,8 +24,127 @@ from src.schemas import ChatResult, Decision, Scope
 from src.tools.document_search import DocumentSearchTool
 
 
-class MultiHopCoordinator:
-    """Run a multi-hop plan without owning retrieval or generation resources."""
+def _enum_value(value: object) -> str:
+    """Return a stable JSON-safe label for an enum or ordinary value."""
+    return str(getattr(value, "value", value))
+
+
+def build_react_events(plan: object, execution: object) -> list[dict]:
+    """Project validated execution data into readable ReAct action/observations.
+
+    The trace intentionally records decisions and tool results, not hidden model
+    reasoning. It is presentation-safe and useful for debugging without becoming
+    another execution engine.
+    """
+    execution_trace = getattr(execution, "trace", {}) or {}
+    requirement_traces = {
+        str(item.get("requirement_id")): item
+        for item in execution_trace.get("requirements", ())
+        if isinstance(item, dict) and item.get("requirement_id")
+    }
+    calculation_traces = {
+        str(item.get("calculation_id")): item
+        for item in execution_trace.get("calculations", ())
+        if isinstance(item, dict) and item.get("calculation_id")
+    }
+
+    events: list[dict] = []
+    for requirement in getattr(plan, "requirements", ()):
+        requirement_id = str(getattr(requirement, "requirement_id", "evidence"))
+        observed = requirement_traces.get(requirement_id, {})
+        missing_groups = list(observed.get("missing_groups", ()))
+        source_ids = list(observed.get("source_ids", ()))
+        fact_ids = list(observed.get("fact_ids", ()))
+        groups = [
+            [str(getattr(group, "ticker", "")), str(getattr(group, "fiscal_year", ""))]
+            for group in getattr(requirement, "groups", ())
+        ]
+        events.append(
+            {
+                "step": len(events) + 1,
+                "reason": {
+                    "decision": "collect_evidence",
+                    "evidence_type": _enum_value(
+                        getattr(requirement, "evidence_type", "unknown")
+                    ),
+                },
+                "action": {
+                    "tool": "document_search",
+                    "arguments": {
+                        "requirement_id": requirement_id,
+                        "query": str(getattr(requirement, "question", "")),
+                        "document_type": str(
+                            getattr(requirement, "document_type", "")
+                        ),
+                        "groups": groups,
+                    },
+                },
+                "observation": {
+                    "status": (
+                        "insufficient_evidence" if missing_groups or not source_ids
+                        else "completed"
+                    ),
+                    "retrieval_mode": observed.get("retrieval_mode", "unknown"),
+                    "candidate_count": int(observed.get("candidate_count", 0) or 0),
+                    "source_ids": source_ids,
+                    "fact_ids": fact_ids,
+                    "missing_groups": missing_groups,
+                },
+            }
+        )
+
+    for calculation in getattr(plan, "calculations", ()):
+        calculation_id = str(
+            getattr(calculation, "calculation_id", "calculation")
+        )
+        observed = calculation_traces.get(calculation_id, {})
+        inputs = [
+            {
+                "requirement_id": str(getattr(reference, "requirement_id", "")),
+                "ticker": str(getattr(reference, "ticker", "")),
+                "fiscal_year": str(getattr(reference, "fiscal_year", "")),
+                "period": getattr(reference, "period", None),
+                "metric_hint": getattr(reference, "metric_hint", None),
+            }
+            for reference in getattr(calculation, "inputs", ())
+        ]
+        events.append(
+            {
+                "step": len(events) + 1,
+                "reason": {
+                    "decision": "calculate_from_validated_facts",
+                    "operation": _enum_value(
+                        getattr(calculation, "operation", "unknown")
+                    ),
+                },
+                "action": {
+                    "tool": "financial_calculator",
+                    "arguments": {
+                        "calculation_id": calculation_id,
+                        "inputs": inputs,
+                    },
+                },
+                "observation": {
+                    "status": observed.get("status", "unavailable"),
+                    "input_fact_ids": list(observed.get("input_fact_ids", ())),
+                    "source_ids": list(observed.get("source_ids", ())),
+                    "result": observed.get("result"),
+                    "result_unit": observed.get("result_unit"),
+                    "reason": observed.get("reason"),
+                },
+            }
+        )
+    return events
+
+
+class BoundedReActAgent:
+    """Run a scope-locked Reason-Act-Observe workflow over approved tools.
+
+    The model proposes a small typed plan. Deterministic validation locks that plan
+    to the user's resolved scope, the executor invokes only approved tools, and each
+    observation is recorded before the agent finishes or safely returns partial
+    evidence. Simple single-hop questions remain on ChatService's lower-latency path.
+    """
 
     def __init__(
         self,
@@ -61,6 +181,19 @@ class MultiHopCoordinator:
         if planner is None or executor is None:
             raise RuntimeError("Multi-hop orchestration is enabled but not initialized.")
 
+        trace["agent"] = {
+            "name": "bounded_financial_react",
+            "protocol": "reason_act_observe",
+            "selected": True,
+            "status": "planning",
+            "tools": [
+                self.document_search_tool.name,
+                "financial_calculator",
+            ],
+            "max_actions": MULTIHOP_MAX_SEARCHES + MULTIHOP_MAX_CALCULATIONS,
+            "events": [],
+        }
+
         try:
             plan = planner.plan(question=question, permitted_scope=scope)
             trace["multihop"]["plan"] = plan.model_dump(mode="json")
@@ -71,7 +204,28 @@ class MultiHopCoordinator:
             )
             trace["multihop"]["execution"] = execution.trace
             trace["multihop"]["issues"] = list(execution.issues)
+            events = build_react_events(plan, execution)
+            if len(events) > trace["agent"]["max_actions"]:
+                raise RuntimeError("Validated agent plan exceeded its action budget.")
+            trace["agent"].update(
+                {
+                    "status": "completed" if execution.complete else "partial",
+                    "actions_used": len(events),
+                    "events": events,
+                    "stop_reason": (
+                        "all_requirements_complete"
+                        if execution.complete
+                        else "insufficient_evidence"
+                    ),
+                }
+            )
         except Exception as error:
+            trace["agent"].update(
+                {
+                    "status": "failed",
+                    "stop_reason": "validated_execution_error",
+                }
+            )
             trace["error_type"] = type(error).__name__
             trace["error_detail"] = " ".join(str(error).split())[:500]
             self._record({**trace, "decision": Decision.ERROR.value})
@@ -337,3 +491,7 @@ class MultiHopCoordinator:
             inherited_fields,
             trace,
         )
+
+
+# Compatibility for callers that still use the older architectural name.
+MultiHopCoordinator = BoundedReActAgent

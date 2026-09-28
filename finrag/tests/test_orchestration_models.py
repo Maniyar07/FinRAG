@@ -5,6 +5,7 @@ import unittest
 from pydantic import ValidationError
 
 from src.orchestration.models import (
+    CalculationReference,
     EvidenceGroup,
     EvidenceRequirement,
     EvidenceType,
@@ -208,6 +209,51 @@ class OrchestrationModelTests(unittest.TestCase):
             tuple(reference.period for reference in plan.calculations[0].inputs),
             ("2023", "2024"),
         )
+
+    def test_plan_allows_only_prior_calculation_dependencies(self) -> None:
+        group = EvidenceGroup(ticker="MSFT", fiscal_year="2025")
+        requirement = EvidenceRequirement(
+            requirement_id="revenue",
+            question="Find reported revenue.",
+            evidence_type="numeric",
+            document_type="10K",
+            groups=(group,),
+        )
+        fact = FactReference(
+            requirement_id="revenue",
+            ticker="MSFT",
+            fiscal_year="2025",
+            metric_hint="revenue",
+        )
+        first = PlannedCalculation(
+            calculation_id="revenue_sum",
+            label="Revenue sum",
+            operation="sum",
+            inputs=(fact,),
+        )
+        second = PlannedCalculation(
+            calculation_id="revenue_ratio",
+            label="Revenue ratio",
+            operation="ratio",
+            inputs=(CalculationReference(calculation_id="revenue_sum"), fact),
+        )
+
+        plan = MultiHopPlan(
+            original_question="Sum revenue, then divide the sum by revenue.",
+            requirements=(requirement,),
+            calculations=(first, second),
+        )
+        self.assertEqual(
+            plan.calculations[1].inputs[0].calculation_id,
+            "revenue_sum",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "unknown or later"):
+            MultiHopPlan(
+                original_question="Use a result before it exists.",
+                requirements=(requirement,),
+                calculations=(second, first),
+            )
 
 
 if __name__ == "__main__":

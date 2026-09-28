@@ -134,6 +134,42 @@ class FakeChatService:
                 "selected": True,
                 "plan": {"private_prompt": "never-return-this"},
             },
+            "agent": {
+                "name": "bounded_financial_react",
+                "protocol": "reason_act_observe",
+                "selected": True,
+                "status": "completed",
+                "tools": ["document_search", "financial_calculator"],
+                "max_actions": 10,
+                "actions_used": 1,
+                "stop_reason": "all_requirements_complete",
+                "events": [
+                    {
+                        "step": 1,
+                        "reason": {
+                            "decision": "collect_evidence",
+                            "evidence_type": "numeric",
+                        },
+                        "action": {
+                            "tool": "document_search",
+                            "arguments": {
+                                "requirement_id": "revenue",
+                                "query": "private decomposed query",
+                                "document_type": "10K",
+                                "groups": [["MSFT", "2024"]],
+                            },
+                        },
+                        "observation": {
+                            "status": "completed",
+                            "retrieval_mode": "hybrid",
+                            "candidate_count": 4,
+                            "source_ids": ["S1"],
+                            "fact_ids": ["F1"],
+                            "missing_groups": [],
+                        },
+                    }
+                ],
+            },
             "retrieval": {
                 "mode": "multi_hop",
                 "candidate_count": 4,
@@ -281,6 +317,12 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertEqual(
             body["trace"]["multihop"], {"enabled": True, "selected": True}
         )
+        self.assertTrue(body["trace"]["agent"]["selected"])
+        self.assertEqual(
+            body["trace"]["agent"]["events"][0]["action"]["tool"],
+            "document_search",
+        )
+        self.assertNotIn("private decomposed query", json.dumps(body["trace"]))
         self.assertEqual(body["trace"]["retrieval"]["mode"], "multi_hop")
         self.assertEqual(body["trace"]["retrieval"]["verified_statement_rows"], 2)
 

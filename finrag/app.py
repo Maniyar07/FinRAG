@@ -106,7 +106,7 @@ with st.sidebar:
         st.session_state.history_start = len(st.session_state.get("messages", []))
     st.session_state.conversation_selection = selection
     st.divider()
-    show_debug = st.checkbox("Show retrieval trace", value=DEBUG_TRACES)
+    show_debug = st.checkbox("Show workflow trace", value=DEBUG_TRACES)
     active_scope = st.session_state.get("active_scope", Scope())
     st.caption("Conversation scope")
     st.write(active_scope.label() if active_scope.complete else "Not established")
@@ -141,7 +141,7 @@ for message in st.session_state.messages:
         render_chat_markdown(message["content"])
         render_sources(message.get("sources", []))
         if show_debug and message.get("trace"):
-            with st.expander("Retrieval trace"):
+            with st.expander("Workflow trace"):
                 st.json(message["trace"])
 
 question = st.chat_input("Ask about a company, fiscal year, filing, or earnings call")
@@ -179,7 +179,7 @@ if question:
             render_chat_markdown(result.answer)
             render_sources(result.sources)
             if show_debug and result.trace:
-                with st.expander("Retrieval trace"):
+                with st.expander("Workflow trace"):
                     st.json(result.trace)
             if result.scope.complete and result.decision in {
                 Decision.ANSWERED,

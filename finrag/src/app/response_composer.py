@@ -7,6 +7,7 @@ from collections import OrderedDict
 
 from src.financial.models import ValueType
 from src.generation.citations import expand_citations
+from src.orchestration.calculation_runner import calculation_as_fact
 from src.orchestration.executor import MultiHopExecutionResult
 from src.retrieval.structured_lookup import VerifiedTableRow
 from src.schemas import Scope
@@ -99,6 +100,60 @@ def _operation_label(result: object, *, margin_ratio: bool) -> str:
     return str(result.operation.value).replace("_", " ").capitalize()
 
 
+def _requested_formula_line(result: object, question: str) -> str | None:
+    """Expose the calculator's operation formula only when the user asks for it."""
+    if not re.search(
+        r"\bformula\b|\bshow\s+(?:the\s+)?(?:calculation|work)\b",
+        question,
+        re.I,
+    ):
+        return None
+    formula = " ".join(str(getattr(result, "formula", "") or "").split())
+    return f"- **Formula:** `{formula}`" if formula else None
+
+
+def _calculation_input_labels(
+    inputs: list[object],
+    source_years: dict[str, str],
+    *,
+    margin_ratio: bool,
+) -> tuple[str, list[str]]:
+    """Build minimally sufficient labels from the validated fact dimensions."""
+    tickers = tuple(
+        dict.fromkeys(
+            str(getattr(fact, "ticker", "") or "").strip()
+            for fact in inputs
+            if str(getattr(fact, "ticker", "") or "").strip()
+        )
+    )
+    metrics = [
+        str(
+            getattr(fact, "metric", "")
+            or getattr(fact, "row_label", "")
+            or "Value"
+        ).strip()
+        for fact in inputs
+    ]
+    cross_company = len(tickers) > 1
+    multiple_metrics = len({_metric_key(metric) for metric in metrics}) > 1
+    include_metric = margin_ratio or multiple_metrics
+
+    labels: list[str] = []
+    for fact, metric in zip(inputs, metrics):
+        period = _period(fact, source_years)
+        dimensions: list[str] = []
+        if cross_company:
+            ticker = str(getattr(fact, "ticker", "") or "").strip()
+            if ticker:
+                dimensions.append(ticker)
+        if include_metric:
+            dimensions.append(metric)
+        labels.append(
+            f"{' - '.join(dimensions)} ({period})" if dimensions else period
+        )
+    return " vs ".join(tickers), labels
+
+
 def verified_calculation_text(
     execution: MultiHopExecutionResult, question: str = ""
 ) -> str | None:
@@ -107,6 +162,9 @@ def verified_calculation_text(
         return None
 
     facts = {fact.fact_id: fact for fact in execution.facts}
+    for item in execution.calculations:
+        if getattr(item, "calculation_id", None):
+            facts[item.calculation_id] = calculation_as_fact(item)
     bundle = getattr(execution, "bundle", None)
     source_years = {
         str(source.get("id")): str(source.get("fiscal_year") or "")
@@ -125,24 +183,30 @@ def verified_calculation_text(
         margin_ratio = result.result_unit == "ratio" and bool(
             re.search(r"\b(?:margin|percentage|percent)\b", f"{question} {item.label}", re.I)
         )
+        company_label, input_labels = _calculation_input_labels(
+            inputs,
+            source_years,
+            margin_ratio=margin_ratio,
+        )
         title_metric = "Net profit margin" if margin_ratio else metric
-        key = (ticker, title_metric.casefold(), tuple(result.input_fact_ids))
+        key = (company_label, title_metric.casefold(), tuple(result.input_fact_ids))
         block = blocks.setdefault(
             key,
-            {"ticker": ticker, "metric": title_metric, "inputs": [], "results": []},
+            {
+                "company_label": company_label,
+                "metric": title_metric,
+                "inputs": [],
+                "results": [],
+            },
         )
         if not block["inputs"]:
-            for fact in inputs:
-                period = _period(fact, source_years)
-                input_metric = str(
-                    getattr(fact, "metric", "")
-                    or getattr(fact, "row_label", "")
-                    or "Value"
-                ).strip()
-                label = f"{input_metric} ({period})" if margin_ratio else period
+            for fact, label in zip(inputs, input_labels):
                 block["inputs"].append(
                     f"- **{label}:** {_fact_value(fact)} [{fact.source_id}]"
                 )
+        formula_line = _requested_formula_line(result, question)
+        if formula_line and formula_line not in block["results"]:
+            block["results"].append(formula_line)
         block["results"].append(
             f"- **{_operation_label(result, margin_ratio=margin_ratio)}:** "
             f"**{_result_value(result, margin_ratio=margin_ratio)}**"
@@ -151,7 +215,12 @@ def verified_calculation_text(
     lines = ["### Calculated results"]
     for block in blocks.values():
         title = " - ".join(
-            part for part in (block["ticker"], str(block["metric"]).capitalize()) if part
+            part
+            for part in (
+                block["company_label"],
+                str(block["metric"]).capitalize(),
+            )
+            if part
         )
         body = "\n".join((*block["inputs"], *block["results"]))
         lines.append(f"#### {title}\n\n{body}")

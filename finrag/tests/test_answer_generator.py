@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from src.generation.answer_generator import AnswerGenerator
+from src.generation.answer_generator import (
+    AnswerGenerator,
+    GroundedClaim,
+    GroundedNarrativeAnswer,
+)
 from src.retrieval.structured_lookup import VerifiedTableRow
 from src.schemas import RetrievalBundle, Scope
 
@@ -50,6 +54,35 @@ def bundle() -> RetrievalBundle:
 
 
 class AnswerGeneratorTests(unittest.TestCase):
+    def test_structured_narrative_claims_render_citations_deterministically(self) -> None:
+        answer, source_ids = AnswerGenerator._payload_values(
+            {
+                "answer": "",
+                "claims": [
+                    {"text": "Capacity was constrained.", "source_ids": ["s1"]},
+                    {
+                        "text": "AI demand increased [S2].",
+                        "source_ids": ["S2", "S1"],
+                    },
+                ],
+                "source_ids": [],
+            }
+        )
+
+        self.assertEqual(
+            answer,
+            "- Capacity was constrained. [S1]\n- AI demand increased. [S2][S1]",
+        )
+        self.assertEqual(source_ids, ["S1", "S2"])
+
+        model_answer, model_source_ids = AnswerGenerator._payload_values(
+            GroundedNarrativeAnswer(
+                claims=[GroundedClaim(text="Capacity was constrained.", source_ids=["S1"])]
+            )
+        )
+        self.assertEqual(model_answer, "- Capacity was constrained. [S1]")
+        self.assertEqual(model_source_ids, ["S1"])
+
     def test_verified_rows_accept_plural_scale_without_currency_symbol(self) -> None:
         source = {"id": "S1"}
         rows = (
@@ -251,12 +284,14 @@ class AnswerGeneratorTests(unittest.TestCase):
                 "id": "S1",
                 "ticker": "MSFT",
                 "fiscal_year": "2025",
+                "doc_type": "TRANSCRIPT",
                 "evidence_requirements": role,
             },
             {
                 "id": "S2",
                 "ticker": "TSLA",
                 "fiscal_year": "2025",
+                "doc_type": "TRANSCRIPT",
                 "evidence_requirements": role,
             },
         ]
@@ -264,7 +299,10 @@ class AnswerGeneratorTests(unittest.TestCase):
         error = AnswerGenerator._narrative_coverage_error(("S1",), sources)
         complete = AnswerGenerator._narrative_coverage_error(("S1", "S2"), sources)
 
-        self.assertEqual(error, "missing_narrative_citation_groups:TSLA-2025")
+        self.assertEqual(
+            error,
+            "missing_narrative_citation_groups:TSLA-2025-TRANSCRIPT",
+        )
         self.assertIsNone(complete)
 
     def test_invalid_first_answer_is_repaired_once(self) -> None:

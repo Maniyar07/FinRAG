@@ -11,6 +11,7 @@ def get_llm_engine(
     timeout: float = 60.0,
     max_retries: int = 2,
     max_tokens: int | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> ChatOpenAI:
     if timeout <= 0:
         raise ValueError("timeout must be positive.")
@@ -30,5 +31,10 @@ def get_llm_engine(
         timeout=timeout,
         max_retries=max_retries,
         max_tokens=max_tokens,
+        model_kwargs=(
+            {"parallel_tool_calls": parallel_tool_calls}
+            if parallel_tool_calls is not None
+            else {}
+        ),
         streaming=False,
     )

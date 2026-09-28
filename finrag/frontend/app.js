@@ -684,7 +684,7 @@ function renderMessage(message) {
       const traceButton = document.createElement("button");
       traceButton.type = "button";
       traceButton.className = "source-action";
-      traceButton.textContent = "View retrieval trace";
+      traceButton.textContent = "View workflow trace";
       traceButton.addEventListener("click", () => openTrace(message.trace));
       actions.append(traceButton);
     }
