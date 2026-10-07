@@ -175,6 +175,33 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertEqual(service.retriever.calls, [])
         self.assertEqual(service.generator.calls, [])
 
+    def test_verified_comparative_column_is_grouped_by_source_filing_year(self) -> None:
+        service = _service()
+        service.available_keys.add(("TSLA", "2024", "10K"))
+        row = VerifiedTableRow(
+            "Automotive regulatory credits", "2023", "1,790", "millions",
+            {
+                "id": "S1", "parent_id": "statement-2024", "ticker": "TSLA",
+                "fiscal_year": "2024", "doc_type": "10K", "section": "Item 8",
+                "source": "TSLA_2024_10K.pdf", "evidence_text": "1,790",
+            },
+        )
+        service.structured_lookup = SimpleNamespace(
+            answer=lambda *_, **__: None,
+            statement_rows=lambda *_, **__: (row,),
+        )
+
+        result = service.ask(
+            "According to Tesla's 2024 10-K, how much automotive regulatory "
+            "credits revenue was reported for the comparative year 2023?"
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertIn("1,790 million", result.answer)
+        self.assertEqual(result.trace["generation"]["mode"], "verified_statement_answer")
+        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(service.generator.calls, [])
+
     def test_generation_validation_failure_has_distinct_decision(self) -> None:
         service = _service()
         service.generator.generate_with_trace = lambda *_, **__: SimpleNamespace(
@@ -450,6 +477,38 @@ class ChatServiceOrchestrationTests(unittest.TestCase):
         self.assertIn("**Total revenues (2025):** USD 94,827 million", answer)
         self.assertIn("**4.07%**", answer)
         self.assertNotIn("0.04 ratio", answer)
+
+    def test_non_margin_percentage_ratio_uses_input_metric_label(self) -> None:
+        facts = (
+            SimpleNamespace(
+                fact_id="F1", ticker="MSFT", metric="Research and development",
+                period="2025", raw_value="32,488", source_id="S1",
+                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
+            ),
+            SimpleNamespace(
+                fact_id="F2", ticker="MSFT", metric="Total revenue", period="2025",
+                raw_value="281,724", source_id="S1",
+                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
+            ),
+        )
+        calculation = SimpleNamespace(
+            label="R&D expense percentage of revenue",
+            result=SimpleNamespace(
+                input_fact_ids=("F1", "F2"), result=Decimal("0.115322"),
+                result_unit="ratio", currency=None, scale=None,
+                source_ids=("S1",), operation=SimpleNamespace(value="ratio"),
+            ),
+        )
+
+        answer = verified_calculation_text(
+            SimpleNamespace(facts=facts, calculations=(calculation,)),
+            "Calculate research and development expense as a percentage of total revenue.",
+        )
+
+        self.assertIn(
+            "Research and development as a percentage of Total revenue", answer
+        )
+        self.assertNotIn("Net profit margin", answer)
 
     def test_cross_company_difference_labels_each_ticker(self) -> None:
         facts = (

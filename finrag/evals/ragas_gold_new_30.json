@@ -1,0 +1,1551 @@
+[
+  {
+    "id": 61,
+    "category": "E - Transcript reported results",
+    "question": "According to Microsoft's fiscal Q4 2024 earnings call, what were capital expenditures including finance leases, and how much cash was paid for property and equipment?",
+    "reference": "According to Microsoft's fiscal Q4 2024 earnings call, capital expenditures including finance leases were $19 billion, and cash paid for property and equipment was $13.9 billion.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024"
+      ],
+      "evidence_quotes": [
+        "Capital expenditures including finance leases were $19 billion, in line with expectations, and cash paid for P, P, and E was $13.9 billion."
+      ],
+      "numeric_facts": [
+        {
+          "label": "Capital Expenditures including Finance Leases",
+          "value": "19",
+          "unit": "billion",
+          "period": "fiscal Q4 2024",
+          "qualifier": "",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Cash Paid for Property and Equipment",
+          "value": "13.9",
+          "unit": "billion",
+          "period": "fiscal Q4 2024",
+          "qualifier": "",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 62,
+    "category": "E - Transcript reported results",
+    "question": "According to Microsoft's fiscal Q4 2024 earnings-call transcript, what Microsoft Cloud gross-margin percentage did management report, how did it change year over year, and what drove the change?",
+    "reference": "According to Microsoft's fiscal Q4 2024 earnings-call transcript, the Microsoft Cloud gross-margin percentage reported was 69%. This represents a decrease of roughly 2 points year-over-year. Management explained that the decrease was driven by a sales mix shift to Azure, partially offset by improvement in Azure, even with the impact of scaling their AI infrastructure.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2023"
+      ],
+      "evidence_quotes": [
+        "Microsoft Cloud gross margin percentage decreased roughly 2 points year-over-year to 69% in line with expectations.",
+        "Excluding the impact of the change in accounting estimate for useful lives, gross margin percentage decreased slightly driven by sales mix shift to Azure, partially offset by improvement in Azure even with the impact of scaling our AI infrastructure."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 63,
+    "category": "E - Transcript reported results",
+    "question": "What commercial remaining performance obligation did Microsoft report on its fiscal Q4 2024 earnings call, and approximately what portion was expected to be recognized as revenue during the following 12 months?",
+    "reference": "Microsoft reported a commercial remaining performance obligation (RPO) of $269 billion for fiscal Q4 2024, which increased by 20% and 21% in constant currency. Approximately 40% of this RPO is expected to be recognized as revenue during the following 12 months, which represents an 18% year-over-year increase.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Commercial remaining performance obligation increased 20% and 21% in constant currency to $269 billion.",
+        "Roughly 40% will be recognized in revenue in the next 12 months, up 18% year-over-year."
+      ],
+      "numeric_facts": [
+        {
+          "label": "Commercial Remaining Performance Obligation",
+          "value": "269",
+          "unit": "billion",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Growth of Commercial Remaining Performance Obligation",
+          "value": "20%",
+          "unit": "percent",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Portion expected to be recognized in next 12 months",
+          "value": "40",
+          "unit": "percent",
+          "period": "2024",
+          "qualifier": "expected",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 64,
+    "category": "F - Transcript management explanation",
+    "question": "On Microsoft's fiscal Q4 2024 earnings-call transcript, what did Amy Hood say about commercial bookings relative to expectations, and which sales motions supported the result?",
+    "reference": "On Microsoft's fiscal Q4 2024 earnings call, Amy Hood stated that commercial bookings were significantly ahead of expectations, increasing 17% and 19% in constant currency. The strong performance was supported by growth in the number of 10-million-dollar-plus and 100-million-dollar-plus contracts for both Azure and Microsoft 365, along with consistent execution across core annuity sales motions.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024"
+      ],
+      "evidence_quotes": [
+        "Commercial bookings were significantly ahead of expectations and increased 17% and 19% in constant currency.",
+        "This record commitment quarter was driven by growth in the number of 10-million-dollar-plus and 100-million-dollar-plus contracts for both Azure and Microsoft 365 and consistent execution across our core annuity sales motions."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 65,
+    "category": "F - Transcript management explanation",
+    "question": "On Microsoft's fiscal Q4 2024 earnings-call transcript, why did management say that building on one Azure AI stack avoids multiple infrastructure investments?",
+    "reference": "On Microsoft's fiscal Q4 2024 earnings call, management explained that building on one Azure AI stack avoids multiple infrastructure investments because it provides a consistent platform used internally and by customers and independent software vendors (ISVs).",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024"
+      ],
+      "evidence_quotes": [
+        "because we’re building to one Azure AI stack, we don’t have to have multiple infrastructure investments. We’re making one. We’re using that internally, first party. And that’s what we’re using with customers to build on as well as ISVs.",
+        "We’re using that internally, first party. And that’s what we’re using with customers to build on as well as ISVs."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 66,
+    "category": "E - Transcript reported results",
+    "question": "What commercial remaining performance obligation did Microsoft report on its fiscal Q4 2025 earnings call, and how fast did it grow?",
+    "reference": "In its fiscal Q4 2025 earnings call, Microsoft reported a commercial remaining performance obligation of $368 billion, which increased by 37% year-over-year and by 35% in constant currency.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "commercial remaining performance obligation increased to $368 billion, up 37% and 35% in constant currency"
+      ],
+      "numeric_facts": [
+        {
+          "label": "Commercial Remaining Performance Obligation",
+          "value": "368",
+          "unit": "billion",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Growth Rate (Year-over-Year)",
+          "value": "37",
+          "unit": "%",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Growth Rate (Constant Currency)",
+          "value": "35",
+          "unit": "%",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 67,
+    "category": "E - Transcript reported results",
+    "question": "According to Microsoft's fiscal Q4 2025 earnings call, what portions of commercial remaining performance obligation were expected to be recognized within and beyond the following 12 months?",
+    "reference": "According to Microsoft's fiscal Q4 2025 earnings call, roughly 35% of the commercial remaining performance obligation is expected to be recognized in revenue in the next 12 months, which represents an increase of 21% year-over-year. The remaining portion, recognized beyond the next 12 months, increased by 49%.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025",
+        "2026"
+      ],
+      "evidence_quotes": [
+        "Roughly 35% will be recognized in revenue in the next 12 months, up 21% year-over-year.",
+        "The remaining portion, recognized beyond the next 12 months, increased 49%."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 68,
+    "category": "G - Transcript guidance",
+    "question": "According to Microsoft's fiscal Q4 2025 earnings call, what Azure growth did management expect for fiscal Q1 2026, what supported the guidance, and what capacity constraint remained?",
+    "reference": "According to Microsoft's fiscal Q4 2025 earnings call, management expects Azure revenue growth of approximately 37% in constant currency for fiscal Q1 2026, driven by strong demand for their portfolio of services on a significant base. The company expects to remain capacity constrained through the first half of the fiscal year.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2026"
+      ],
+      "evidence_quotes": [
+        "In Azure, we expect Q1 revenue growth of approximately 37% in constant currency driven by strong demand for our portfolio of services on a significant base.",
+        "driven by strong demand for our portfolio of services on a significant base.",
+        "we currently expect to remain capacity constrained through the first half of our fiscal year."
+      ],
+      "numeric_facts": [
+        {
+          "label": "Azure revenue growth",
+          "value": "37",
+          "unit": "%",
+          "period": "Q1 2026",
+          "qualifier": "constant currency",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 69,
+    "category": "G - Transcript guidance",
+    "question": "On Microsoft's fiscal Q4 2025 earnings call, what capital expenditure level did management expect for fiscal Q1 2026, what was driving it, and why could quarterly spending vary?",
+    "reference": "On Microsoft's fiscal Q4 2025 earnings call, management expected capital expenditures for fiscal Q1 2026 to be over $30 billion. This expectation was driven by continued strong demand signals. Quarterly spending could vary due to cloud infrastructure buildouts and the timing of delivery of finance leases.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2026"
+      ],
+      "evidence_quotes": [
+        "We expect Q1 capital expenditures to be over $30 billion driven by the continued strong demand signals we see.",
+        "driven by the continued strong demand signals we see.",
+        "there can be quarterly spend variability from cloud infrastructure buildouts and the timing of delivery of finance leases."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 70,
+    "category": "G - Transcript guidance",
+    "question": "According to Microsoft's fiscal Q4 2025 earnings-call transcript, what Microsoft Cloud gross-margin percentage did management expect for fiscal Q1 2026, and why was it expected to decline year over year?",
+    "reference": "According to Microsoft's fiscal Q4 2025 earnings-call transcript, management expected the Microsoft Cloud gross margin percentage for fiscal Q1 2026 to be roughly 67%. This expectation was due to the impact of continuing to scale their AI infrastructure, which was anticipated to drive a decline year-over-year.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2026"
+      ],
+      "evidence_quotes": [
+        "Microsoft Cloud gross margin percentage should be roughly 67%",
+        "down year-over-year driven by the impact of continuing to scale our AI infrastructure"
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 71,
+    "category": "E - Transcript reported results",
+    "question": "According to Tesla's fiscal Q4 2024 earnings-call transcript, what did Tesla report about its cost per vehicle, and which cost category primarily drove the reduction?",
+    "reference": "According to Tesla's fiscal Q4 2024 earnings-call transcript, Tesla reported that its overall cost per car is down below $35,000, driven primarily by material costs. This reduction occurred despite increased depreciation and other costs.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024"
+      ],
+      "evidence_quotes": [
+        "we were able to get our overall cost per car down below $35,000, driven primarily by material costs. This was despite increased depreciation and other costs",
+        "driven primarily by material costs",
+        "This was despite increased depreciation and other costs"
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 72,
+    "category": "G - Transcript guidance",
+    "question": "What timing did Tesla provide on its fiscal Q4 2024 earnings call for launching a more affordable vehicle model?",
+    "reference": "Tesla is still on track to launch a more affordable model in the first half of 2025.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "We are still on track to launch a more affordable model in the first half of 2025 and will continue to expand our lineup from there."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 73,
+    "category": "F - Transcript management explanation",
+    "question": "According to Tesla's fiscal Q4 2024 earnings-call transcript, what did management say about energy-storage deployments, the contribution of Megapack and Powerwall, and supply constraints?",
+    "reference": "According to Tesla's fiscal Q4 2024 earnings-call transcript, energy storage deployments reached an all-time high in Q4, with growth coming from Megapack and Powerwall. Both businesses continue to be supply constrained. Management mentioned that they are trying to ramp up production with Megafactory Shanghai coming online this quarter onwards. While quarterly deployments will likely continue to fluctuate sequentially, they expect at least 50% growth in deployments year over year in 2025.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Energy storage deployments reached an all-time high in Q4, and this resulted in -- but declined sequentially.",
+        "this resulted in -- but declined sequentially. This was a result of higher -- sorry, growth came from Megapack and Powerwall.",
+        "Both businesses continue to be supply constrained",
+        "we're trying to ramp up production with Megafactory Shanghai coming online this quarter onwards.",
+        "we expect at least 50% growth in deployments year over year in 2025."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 74,
+    "category": "F - Transcript management explanation",
+    "question": "On Tesla's fiscal Q4 2024 earnings-call transcript, why did Tesla say tariffs could affect all of its businesses despite its efforts to localize supply chains?",
+    "reference": "On Tesla's fiscal Q4 2024 earnings-call transcript, the company stated that despite efforts to localize its supply chain in every market, it remains reliant on parts from across the world for all its businesses. This dependency means that the imposition of tariffs, which is considered very likely, will still impact Tesla's business and profitability.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "There's a lot of uncertainty around tariffs. Over the years, we've tried to localize our supply chain in every market, but we are still very reliant on parts from across the world for all our businesses. Therefore, the imposition of tariffs, which is very likely, will have an impact on our business and profitability."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 75,
+    "category": "F - Transcript management explanation",
+    "question": "Was Optimus design-locked for 2025 production according to Tesla's fiscal Q4 2024 earnings call, and how did Elon Musk characterize its development status?",
+    "reference": "Optimus is not design-locked for 2025 production. Elon Musk characterized its development status by stating, \"we are designing the train at the station and in real time while also building the tracks.\"",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Optimus is not design-locked.",
+        "we are designing the train at the station and in real time while also building the tracks."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 76,
+    "category": "E - Transcript reported results",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, what total gross-margin percentage did Tesla report, and which headwinds did management say affected it?",
+    "reference": "According to Tesla's fiscal Q4 2025 earnings-call transcript, Tesla reported a total gross margin percentage of over 20.1%. Management identified headwinds affecting this margin as lower fixed cost absorption and the impact of tariffs.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "On total gross margin front, we ended the quarter with over 20.1%, something which we haven't achieved for over the last two years.",
+        "This improvement came despite the impact of lower fixed cost absorption and the impact of tariffs"
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 77,
+    "category": "F - Transcript management explanation",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, why did management say that robotaxi revenue and cost-per-mile metrics were not yet meaningful?",
+    "reference": "According to Tesla's fiscal Q4 2025 earnings-call transcript, management stated that the revenue and cost per mile metrics for robotaxi were not meaningful because the company is still in the early phase of fleet deployment and is conducting a lot of validation testing.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Given that we are still in the early phase of our fleet deployment, are still doing a lot of validation testing. The revenue and cost per mile metrics are not meaningful to discuss at the moment."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 78,
+    "category": "F - Transcript management explanation",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, which countries had record deliveries, and what did management say about the year-end backlog?",
+    "reference": "According to Tesla's fiscal Q4 2025 earnings-call transcript, record deliveries were achieved in Malaysia, Norway, Poland, Saudi Arabia, and Taiwan. Management characterized the year-end backlog as being larger than in recent years.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        },
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Prepared Remarks"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "record deliveries in smaller countries like Malaysia, Norway, Poland, Saudi Arabia, and Taiwan",
+        "ended the year with a larger backlog than in recent years"
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 79,
+    "category": "G - Transcript guidance",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, what did Tesla say about its energy-storage backlog, Megapack 3 and Megablock, expected deployments, and margin pressure for 2026?",
+    "reference": "Looking to 2026, Tesla said its energy-storage backlog remained strong and well-diversified globally, expected increasing deployments with the launch of MegaPack 3 and Mega Block, and anticipated margin compression from increased low-cost competition, policy uncertainty, and tariff costs.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2026"
+      ],
+      "evidence_quotes": [
+        "As we look at 2026, our backlog remains strong, well-diversified globally, and we expect increasing deployments with the launch of MegaPack 3 and Mega Block.",
+        "we expect increasing deployments with the launch of MegaPack 3 and Mega Block.",
+        "we expect margin compression from the increased low-cost competition impacts to market from policy uncertainty, and the cost of tariffs."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 80,
+    "category": "F - Transcript management explanation",
+    "question": "On Tesla's fiscal Q4 2025 earnings-call transcript, why did Elon Musk describe completion of the AI5 chip design as one of the company's most critical priorities?",
+    "reference": "On Tesla's fiscal Q4 2025 earnings call, Elon Musk called completing a strong AI5 chip design arguably Tesla's most critical task and said he was spending more time on it than anything else at the company. He said the chip was essential to Optimus because the robot would be completely useless without an AI chip and would not even be able to sit.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Optimus is completely useless without an AI chip.",
+        "Optimus is just a mannequin without, it's like the Tin Man or whatever The Wizard of Oz. But even worse, at least the Tin Man could walk. Optimus won't even be able to just sit there without an AI chip.",
+        "Completing the AI5 chip design and having it be a great chip is arguably the number one most critical thing to get done, which is why I'm spending more time on that than currently anything else at Tesla, Inc."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 81,
+    "category": "H - Derived financial ratios",
+    "question": "Using Microsoft's 2025 10-K, calculate research and development expense as a percentage of total revenue for fiscal 2025. State both inputs and the percentage rounded to one decimal place.",
+    "reference": "Using Microsoft's 2025 10-K, the research and development expense for fiscal 2025 is $32,488 million, and the total revenue is $281,724 million. The research and development expense as a percentage of total revenue is calculated as follows: (32,488 / 281,724) * 100 = 11.5%.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_10K.pdf",
+          "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA"
+        },
+        {
+          "document": "MSFT_2025_10K.pdf",
+          "section": "Item 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Research and development | 32,488 | 29,510 | 27,195 |",
+        "Total revenue | 281,724 | 245,122 | 211,915 |"
+      ],
+      "numeric_facts": [
+        {
+          "label": "Research and Development Expense",
+          "value": "32,488",
+          "unit": "million",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "label": "Total Revenue",
+          "value": "281,724",
+          "unit": "million",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": "",
+      "calculations": [
+        {
+          "operation": "percentage_of",
+          "operands": [
+            "32,488",
+            "281,724"
+          ],
+          "result": "11.5",
+          "unit": "%",
+          "decimal_places": 1,
+          "explanation": "Calculated as (32,488 / 281,724) * 100."
+        }
+      ],
+      "calculation": true
+    }
+  },
+  {
+    "id": 82,
+    "category": "H - Derived financial ratios",
+    "question": "Using Tesla's 2025 10-K, calculate gross profit as a percentage of total revenue for 2025. State both inputs and the percentage rounded to one decimal place.",
+    "reference": "Using Tesla's 2025 10-K, gross profit for 2025 is $17,094 million and total revenue is $94,827 million. The gross profit as a percentage of total revenue is calculated as (17,094 / 94,827) * 100, which equals 18.0%.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_10K.pdf",
+          "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA"
+        }
+      ],
+      "fact_years": [
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Gross profit | 17,094 | 17,450 | 17,660",
+        "Total revenues | 94,827 | 97,690 | 96,773"
+      ],
+      "numeric_facts": [
+        {
+          "label": "Total gross profit",
+          "value": "17,094",
+          "unit": "million",
+          "period": "2025",
+          "qualifier": "",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Total revenue",
+          "value": "94,827",
+          "unit": "million",
+          "period": "2025",
+          "qualifier": "",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": "",
+      "calculations": [
+        {
+          "operation": "percentage_of",
+          "operands": [
+            "17094",
+            "94827"
+          ],
+          "result": "18.0",
+          "unit": "%",
+          "decimal_places": 1,
+          "explanation": "Calculated as (Gross Profit / Total Revenue) * 100 = (17,094 / 94,827) * 100."
+        }
+      ],
+      "calculation": true
+    }
+  },
+  {
+    "id": 83,
+    "category": "H - Derived financial ratios",
+    "question": "According to Microsoft's 2025 10-K, by how much did total current liabilities change from fiscal 2024 to fiscal 2025, in dollars and percentage terms?",
+    "reference": "According to Microsoft's 2025 10-K, total current liabilities for fiscal 2025 were $141,218 million, and for fiscal 2024, they were $125,286 million. The dollar increase in total current liabilities from fiscal 2024 to fiscal 2025 is $15,932 million. The percentage change is 12.7%.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_10K.pdf",
+          "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA"
+        }
+      ],
+      "fact_years": [
+        "2025",
+        "2024"
+      ],
+      "evidence_quotes": [
+        "Total current liabilities | 141,218 | 125,286"
+      ],
+      "numeric_facts": [
+        {
+          "label": "Total current liabilities 2025",
+          "value": "141,218",
+          "unit": "million",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Total current liabilities 2024",
+          "value": "125,286",
+          "unit": "million",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": "",
+      "calculations": [
+        {
+          "operation": "difference",
+          "operands": [
+            "141218",
+            "125286"
+          ],
+          "result": "15932",
+          "unit": "million",
+          "decimal_places": 0,
+          "explanation": "The dollar increase is calculated as total current liabilities for 2025 minus total current liabilities for 2024."
+        },
+        {
+          "operation": "percentage_change",
+          "operands": [
+            "141218",
+            "125286"
+          ],
+          "result": "12.7",
+          "unit": "%",
+          "decimal_places": 1,
+          "explanation": "The percentage change is calculated as the dollar increase divided by total current liabilities for 2024, multiplied by 100."
+        }
+      ],
+      "calculation": true
+    }
+  },
+  {
+    "id": 84,
+    "category": "H - Derived financial ratios",
+    "question": "According to Tesla's 2024 10-K, by how much did energy generation and storage revenue change from 2023 to 2024, in dollars and percentage terms?",
+    "reference": "According to Tesla's 2024 10-K, energy generation and storage revenue for 2024 was $10,086 million, while for 2023 it was $6,035 million. The dollar increase in revenue from 2023 to 2024 is $4,051 million. The percentage change in revenue is 67.1%.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_10K.pdf",
+          "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA"
+        },
+        {
+          "document": "TSLA_2024_10K.pdf",
+          "section": "Item 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2023"
+      ],
+      "evidence_quotes": [
+        "Energy generation and storage | 10,086 | 6,035 |",
+        "Energy generation and storage segment revenue | 10,086 | 6,035 | 3,909 | 4,051 | 67% |"
+      ],
+      "numeric_facts": [
+        {
+          "label": "Energy generation and storage revenue 2024",
+          "value": "10086",
+          "unit": "million",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Energy generation and storage revenue 2023",
+          "value": "6035",
+          "unit": "million",
+          "period": "2023",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": "",
+      "calculations": [
+        {
+          "operation": "difference",
+          "operands": [
+            "10086",
+            "6035"
+          ],
+          "result": "4051",
+          "unit": "million",
+          "decimal_places": 0,
+          "explanation": "Calculated the dollar increase in revenue by subtracting 2023 revenue from 2024 revenue."
+        },
+        {
+          "operation": "percentage_change",
+          "operands": [
+            "10086",
+            "6035"
+          ],
+          "result": "67.1",
+          "unit": "%",
+          "decimal_places": 1,
+          "explanation": "Calculated the percentage change in revenue using 2023 revenue as the denominator."
+        }
+      ],
+      "calculation": true
+    }
+  },
+  {
+    "id": 85,
+    "category": "H - Derived financial ratios",
+    "question": "According to Tesla's 2024 10-K, by how much did net cash provided by operating activities change from 2023 to 2024, in dollars and percentage terms?",
+    "reference": "According to Tesla's 2024 10-K, net cash provided by operating activities was $14,923 million in 2024 and $13,256 million in 2023. The dollar increase in net cash provided by operating activities from 2023 to 2024 is $1,667 million. The percentage change is 12.6%.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_10K.pdf",
+          "section": "Item 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS"
+        },
+        {
+          "document": "TSLA_2024_10K.pdf",
+          "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2023"
+      ],
+      "evidence_quotes": [
+        "Net cash provided by operating activities | $14,923 | $13,256 |"
+      ],
+      "numeric_facts": [
+        {
+          "label": "Net cash provided by operating activities 2024",
+          "value": "14923",
+          "unit": "million",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "label": "Net cash provided by operating activities 2023",
+          "value": "13256",
+          "unit": "million",
+          "period": "2023",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": "",
+      "calculations": [
+        {
+          "operation": "difference",
+          "operands": [
+            "14923",
+            "13256"
+          ],
+          "result": "1667",
+          "unit": "million",
+          "decimal_places": 0,
+          "explanation": "Calculated as 14923 - 13256."
+        },
+        {
+          "operation": "percentage_change",
+          "operands": [
+            "14923",
+            "13256"
+          ],
+          "result": "12.6",
+          "unit": "%",
+          "decimal_places": 1,
+          "explanation": "Calculated as (1667 / 13256) * 100."
+        }
+      ],
+      "calculation": true
+    }
+  },
+  {
+    "id": 86,
+    "category": "I - Cross-document transcript comparison",
+    "question": "Compare Microsoft's fiscal 2024 earnings-call transcript with its fiscal 2025 earnings-call transcript for commercial remaining performance obligation. State both values and the dollar increase.",
+    "reference": "In fiscal 2024, Microsoft's commercial remaining performance obligation was $269 billion. In fiscal 2025, it increased to $368 billion. The dollar increase from fiscal 2024 to fiscal 2025 is $99 billion.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024",
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        },
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2025"
+      ],
+      "evidence_quotes": [
+        "Commercial remaining performance obligation increased 20% and 21% in constant currency to $269 billion.",
+        "Commercial remaining performance obligation increased to $368 billion, up 37% and 35% in constant currency."
+      ],
+      "numeric_facts": [
+        {
+          "label": "Commercial Remaining Performance Obligation 2024",
+          "value": "269",
+          "unit": "billion USD",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Commercial Remaining Performance Obligation 2025",
+          "value": "368",
+          "unit": "billion USD",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E4"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": "",
+      "calculations": [
+        {
+          "operation": "difference",
+          "operands": [
+            "368",
+            "269"
+          ],
+          "result": "99",
+          "unit": "billion USD",
+          "decimal_places": 0,
+          "explanation": "The dollar increase is calculated by subtracting the 2024 value from the 2025 value."
+        }
+      ],
+      "calculation": true
+    }
+  },
+  {
+    "id": 87,
+    "category": "I - Cross-document transcript comparison",
+    "question": "Compare Microsoft's fiscal 2024 earnings-call transcript with its fiscal 2025 earnings-call transcript: state the reported fiscal Q4 2024 Cloud gross margin and the fiscal Q1 2026 Cloud gross-margin guidance, clearly distinguishing the result from guidance.",
+    "reference": "Microsoft's fiscal Q4 2024 Cloud gross margin was reported at 69%. For fiscal Q1 2026, the company guided a Cloud gross margin of roughly 67%.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024",
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        },
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2026"
+      ],
+      "evidence_quotes": [
+        "Microsoft Cloud gross margin percentage decreased roughly 2 points year-over-year to 69% in line with expectations.",
+        "Microsoft Cloud gross margin percentage should be roughly 67%, down year-over-year driven by the impact of continuing to scale our AI infrastructure."
+      ],
+      "numeric_facts": [
+        {
+          "label": "Fiscal Q4 2024 Cloud gross margin",
+          "value": "69",
+          "unit": "%",
+          "period": "Q4 2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "label": "Fiscal Q1 2026 Cloud gross margin guidance",
+          "value": "67",
+          "unit": "%",
+          "period": "Q1 2026",
+          "qualifier": "guided",
+          "evidence_ids": [
+            "E4"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 88,
+    "category": "J - Filing and transcript synthesis",
+    "question": "What did Microsoft's fiscal Q4 2025 earnings-call transcript say about AI-infrastructure spending and capacity, what datacenter dependencies did its 2025 10-K describe, and how do those observations frame capacity expansion when considered together?",
+    "reference": "On Microsoft's fiscal Q4 2025 earnings call, management guided fiscal Q1 2026 capital expenditures to more than $30 billion because of continued strong demand and expected capacity to remain constrained through the first half of fiscal 2026. Microsoft's 2025 10-K said its datacenters depend on permitted and buildable land, predictable energy, networking supplies, and servers including GPUs. Taken together, the transcript describes planned investment and near-term capacity pressure, while the filing identifies resources on which datacenter expansion depends; the sources do not establish that those dependencies caused the spending guidance.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "10K",
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "MSFT_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        },
+        {
+          "document": "MSFT_2025_10K.pdf",
+          "section": "Item 1A. RISK FACTORS"
+        },
+        {
+          "document": "MSFT_2025_10K.pdf",
+          "section": "Item 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS"
+        }
+      ],
+      "fact_years": [
+        "2025",
+        "2026"
+      ],
+      "evidence_quotes": [
+        "We expect Q1 capital expenditures to be over $30 billion driven by the continued strong demand signals we see.",
+        "Microsoft Cloud gross margin percentage should be roughly 67%, down year-over-year driven by the impact of continuing to scale our AI infrastructure.",
+        "Our datacenters depend on the availability of permitted and buildable land, predictable energy, networking supplies, and servers, including graphics processing units and other components.",
+        "The investments we are making in cloud and AI infrastructure and devices will continue to increase our operating costs and may decrease our operating margins."
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 89,
+    "category": "J - Filing and transcript synthesis",
+    "question": "Using Tesla's 2025 10-K and fiscal Q4 2025 earnings-call transcript, how does the quarterly automotive-margin commentary compare with the annual automotive results?",
+    "reference": "In 2025, Tesla's automotive gross profit was $12,361 million and automotive gross margin was 17.8%, down from $14,197 million and 18.4% in 2024. In fiscal Q4 2025, automotive margin excluding credits improved sequentially from 15.4% to 17.9%. Automotive gross profit was flat sequentially despite 16% lower deliveries, primarily because the regional mix included proportionally more deliveries in APAC and EMEA.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "10K",
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2025_10K.pdf",
+          "section": "Item 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS"
+        },
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2025",
+        "2024"
+      ],
+      "evidence_quotes": [
+        "Gross profit total automotive | $12,361 | $14,197 | $16,030 |",
+        "Gross margin total automotive | 17.8% | 18.4% | 19.4% |",
+        "automotive margins, excluding credits, improved sequentially from 15.4% to 17.9%.",
+        "automotive gross profit was flat sequentially despite 16% lower deliveries, primarily due to regional mix as we had proportionately more deliveries in APAC and EMEA."
+      ],
+      "numeric_facts": [
+        {
+          "label": "2025 automotive gross profit",
+          "value": "12361",
+          "unit": "million",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "label": "2025 automotive gross margin",
+          "value": "17.8",
+          "unit": "%",
+          "period": "2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "label": "2024 automotive gross profit",
+          "value": "14197",
+          "unit": "million",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "label": "2024 automotive gross margin",
+          "value": "18.4",
+          "unit": "%",
+          "period": "2024",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "label": "Q4 2025 automotive margin excluding credits",
+          "value": "17.9",
+          "unit": "%",
+          "period": "Q4 2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E4"
+          ]
+        },
+        {
+          "label": "Q4 2025 automotive margin excluding credits (previous quarter)",
+          "value": "15.4",
+          "unit": "%",
+          "period": "Q4 2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E4"
+          ]
+        },
+        {
+          "label": "Q4 2025 deliveries decrease",
+          "value": "16",
+          "unit": "%",
+          "period": "Q4 2025",
+          "qualifier": "reported",
+          "evidence_ids": [
+            "E4"
+          ]
+        }
+      ],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  },
+  {
+    "id": 90,
+    "category": "I - Cross-document transcript comparison",
+    "question": "Compare Tesla's fiscal 2024 and fiscal 2025 earnings-call transcripts: summarize the 2024 energy-storage deployment and supply commentary, then state the fiscal 2025 call's backlog, new-product, deployment, and margin outlook for 2026.",
+    "reference": "On Tesla's fiscal Q4 2024 call, energy-storage deployments reached an all-time high, growth came from Megapack and Powerwall, both businesses remained supply constrained, and management expected at least 50% deployment growth in 2025 while ramping Megafactory Shanghai. On the fiscal Q4 2025 call, looking to 2026, Tesla described its backlog as strong and globally diversified, expected increasing deployments with the launch of MegaPack 3 and Mega Block, and anticipated margin compression from increased low-cost competition, policy uncertainty, and tariff costs.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024",
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    },
+    "metadata": {
+      "sources": [
+        {
+          "document": "TSLA_2024_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        },
+        {
+          "document": "TSLA_2025_TRANSCRIPT.html",
+          "section": "Q4 Earnings Call"
+        }
+      ],
+      "fact_years": [
+        "2024",
+        "2025",
+        "2026"
+      ],
+      "evidence_quotes": [
+        "Energy storage deployments reached an all-time high in Q4, and this resulted in -- but declined sequentially. This was a result of higher -- sorry, growth came from Megapack and Powerwall. Both businesses continue to be supply constrained, and like Elon mentioned, we're trying to ramp up production with Megafactory Shanghai coming online this quarter onwards.",
+        "we expect at least 50% growth in deployments year over year in 2025.",
+        "our backlog remains strong, well-diversified globally, and we expect increasing deployments with the launch of MegaPack 3 and Mega Block.",
+        "However, we expect margin compression from the increased low-cost competition impacts to market from policy uncertainty, and the cost of tariffs.",
+        "ended the year with nearly $12.8 billion in revenue, a 26.6% year-over-year growth"
+      ],
+      "numeric_facts": [],
+      "verified": true,
+      "reviewer_notes": ""
+    }
+  }
+]

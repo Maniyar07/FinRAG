@@ -1,0 +1,369 @@
+[
+  {
+    "id": 61,
+    "category": "E - Transcript reported results",
+    "question": "According to Microsoft's fiscal Q4 2024 earnings call, what were capital expenditures including finance leases, and how much cash was paid for property and equipment?",
+    "scope": {"tickers": ["MSFT"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024"],
+    "answer_requirements": ["State both reported amounts", "Preserve the distinction between capital expenditures including finance leases and cash paid for property and equipment"],
+    "evidence_requests": [
+      {"id": "capex_and_cash_ppe", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["capital expenditures including finance leases were 19 billion cash paid for property plant and equipment 13.9 billion", "total company results capital expenditures cash paid PP&E"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 62,
+    "category": "E - Transcript reported results",
+    "question": "According to Microsoft's fiscal Q4 2024 earnings-call transcript, what Microsoft Cloud gross-margin percentage did management report, how did it change year over year, and what drove the change?",
+    "scope": {"tickers": ["MSFT"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024", "2023"],
+    "answer_requirements": ["State the reported gross-margin percentage", "State the year-over-year change", "State the management explanation without converting guidance into a historical cause"],
+    "evidence_requests": [
+      {"id": "cloud_margin_result", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["Microsoft Cloud gross margin percentage decreased roughly 2 points year-over-year to 69%", "gross margin useful lives sales mix shift to Azure"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 63,
+    "category": "E - Transcript reported results",
+    "question": "What commercial remaining performance obligation did Microsoft report on its fiscal Q4 2024 earnings call, and approximately what portion was expected to be recognized as revenue during the following 12 months?",
+    "scope": {"tickers": ["MSFT"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024", "2025"],
+    "answer_requirements": ["State the commercial RPO amount", "State its reported growth", "State the portion expected to be recognized in the following 12 months"],
+    "evidence_requests": [
+      {"id": "commercial_rpo_2024", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["commercial remaining performance obligation increased 20% 21% constant currency 269 billion", "roughly 40% recognized revenue next 12 months"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 64,
+    "category": "F - Transcript management explanation",
+    "question": "On Microsoft's fiscal Q4 2024 earnings-call transcript, what did Amy Hood say about commercial bookings relative to expectations, and which sales motions supported the result?",
+    "scope": {"tickers": ["MSFT"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024"],
+    "answer_requirements": ["Preserve the named-speaker attribution only if supported", "Describe performance relative to expectations", "Identify the supporting sales motions or commitments"],
+    "evidence_requests": [
+      {"id": "commercial_bookings_explanation", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["Amy Hood commercial bookings much better than expected core annuity renewal larger long-term commitments", "commercial bookings commitments execution sales motions"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 65,
+    "category": "F - Transcript management explanation",
+    "question": "On Microsoft's fiscal Q4 2024 earnings-call transcript, why did management say that building on one Azure AI stack avoids multiple infrastructure investments?",
+    "scope": {"tickers": ["MSFT"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024"],
+    "answer_requirements": ["Explain the one-stack strategy", "Distinguish Microsoft's internal use from customer and ISV use", "Do not infer financial effects not stated in the evidence"],
+    "evidence_requests": [
+      {"id": "azure_ai_stack", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["building to one Azure AI stack do not have multiple infrastructure investments", "using internally first party customers ISVs consistent platform"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 66,
+    "category": "E - Transcript reported results",
+    "question": "What commercial remaining performance obligation did Microsoft report on its fiscal Q4 2025 earnings call, and how fast did it grow?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State the commercial RPO amount", "State reported growth and constant-currency growth"],
+    "evidence_requests": [
+      {"id": "commercial_rpo_2025", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["commercial remaining performance obligation increased to 368 billion up 37% 35% constant currency", "10-million 100-million-dollar-plus contracts Azure Microsoft 365"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 67,
+    "category": "E - Transcript reported results",
+    "question": "According to Microsoft's fiscal Q4 2025 earnings call, what portions of commercial remaining performance obligation were expected to be recognized within and beyond the following 12 months?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025", "2026"],
+    "answer_requirements": ["State the portion expected within 12 months and its growth", "State the growth of the remaining portion beyond 12 months"],
+    "evidence_requests": [
+      {"id": "rpo_recognition_timing", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["roughly 35% recognized revenue next 12 months up 21% remaining portion beyond next 12 months increased 49%"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 68,
+    "category": "G - Transcript guidance",
+    "question": "According to Microsoft's fiscal Q4 2025 earnings call, what Azure growth did management expect for fiscal Q1 2026, what supported the guidance, and what capacity constraint remained?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2026"],
+    "answer_requirements": ["Label the statement as forward guidance", "State Azure constant-currency growth", "State the demand driver", "State the expected duration of the capacity constraint"],
+    "evidence_requests": [
+      {"id": "azure_q1_guidance", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["Azure expect Q1 revenue growth approximately 37% constant currency strong demand significant base", "remain capacity constrained through first half fiscal year"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 69,
+    "category": "G - Transcript guidance",
+    "question": "On Microsoft's fiscal Q4 2025 earnings call, what capital expenditure level did management expect for fiscal Q1 2026, what was driving it, and why could quarterly spending vary?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2026"],
+    "answer_requirements": ["Label the amount as guidance", "Preserve the over qualifier", "State the demand driver", "State the sources of quarterly variability"],
+    "evidence_requests": [
+      {"id": "q1_capex_guidance", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["expect Q1 capital expenditures over 30 billion strong demand signals", "quarterly spend variability cloud infrastructure buildouts timing delivery finance leases"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 70,
+    "category": "G - Transcript guidance",
+    "question": "According to Microsoft's fiscal Q4 2025 earnings-call transcript, what Microsoft Cloud gross-margin percentage did management expect for fiscal Q1 2026, and why was it expected to decline year over year?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2026"],
+    "answer_requirements": ["Label the percentage as guidance", "State the expected percentage", "State the reason for the expected decline"],
+    "evidence_requests": [
+      {"id": "q1_cloud_margin_guidance", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["Microsoft Cloud gross margin percentage roughly 67% down year-over-year continuing scale AI infrastructure"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 71,
+    "category": "E - Transcript reported results",
+    "question": "According to Tesla's fiscal Q4 2024 earnings-call transcript, what did Tesla report about its cost per vehicle, and which cost category primarily drove the reduction?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024"],
+    "answer_requirements": ["State the reported cost-per-vehicle threshold", "State the primary driver", "Preserve the distinction from depreciation and other costs"],
+    "evidence_requests": [
+      {"id": "cost_per_vehicle", "ticker": "TSLA", "year": "2024", "doc_type": "TRANSCRIPT", "source": "TSLA_2024_TRANSCRIPT.html", "search_queries": ["overall cost per car down below 35,000 driven primarily by material costs", "increased depreciation other costs cost reduction"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 72,
+    "category": "G - Transcript guidance",
+    "question": "What timing did Tesla provide on its fiscal Q4 2024 earnings call for launching a more affordable vehicle model?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State the launch timing as forward-looking guidance", "Do not convert launch timing into a production-volume commitment"],
+    "evidence_requests": [
+      {"id": "affordable_model_timing", "ticker": "TSLA", "year": "2024", "doc_type": "TRANSCRIPT", "source": "TSLA_2024_TRANSCRIPT.html", "search_queries": ["on track launch a more affordable model first half 2025", "introducing several new products throughout 2025"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 73,
+    "category": "F - Transcript management explanation",
+    "question": "According to Tesla's fiscal Q4 2024 earnings-call transcript, what did management say about energy-storage deployments, the contribution of Megapack and Powerwall, and supply constraints?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024", "2025"],
+    "answer_requirements": ["State the deployment characterization", "Identify Megapack and Powerwall", "State the supply constraint and relevant production outlook"],
+    "evidence_requests": [
+      {"id": "energy_storage_commentary_2024", "ticker": "TSLA", "year": "2024", "doc_type": "TRANSCRIPT", "source": "TSLA_2024_TRANSCRIPT.html", "search_queries": ["energy storage deployments reached all-time high Q4 growth Megapack Powerwall supply constrained", "Megafactory Shanghai coming online quarterly deployments"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 74,
+    "category": "F - Transcript management explanation",
+    "question": "On Tesla's fiscal Q4 2024 earnings-call transcript, why did Tesla say tariffs could affect all of its businesses despite its efforts to localize supply chains?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State the supply-chain dependency", "Explain why localization did not eliminate tariff exposure", "Do not quantify an impact that the evidence does not quantify"],
+    "evidence_requests": [
+      {"id": "tariff_exposure_2024", "ticker": "TSLA", "year": "2024", "doc_type": "TRANSCRIPT", "source": "TSLA_2024_TRANSCRIPT.html", "search_queries": ["uncertainty around tariffs localize supply chain every market reliant on parts across world all businesses"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 75,
+    "category": "F - Transcript management explanation",
+    "question": "Was Optimus design-locked for 2025 production according to Tesla's fiscal Q4 2024 earnings call, and how did Elon Musk characterize its development status?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["Answer the design-lock question directly", "Attribute the characterization to Elon Musk only if the speaker evidence supports it", "Do not infer a production commitment"],
+    "evidence_requests": [
+      {"id": "optimus_design_status", "ticker": "TSLA", "year": "2024", "doc_type": "TRANSCRIPT", "source": "TSLA_2024_TRANSCRIPT.html", "search_queries": ["is Optimus design-locked for 2025 production Optimus is not design-locked", "designing the train redesigning the train"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 76,
+    "category": "E - Transcript reported results",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, what total gross-margin percentage did Tesla report, and which headwinds did management say affected it?",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State the reported quarterly gross-margin percentage", "State the identified headwinds", "Do not confuse quarterly gross margin with annual gross profit"],
+    "evidence_requests": [
+      {"id": "q4_total_gross_margin", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["total gross margin ended quarter over 20.1% lower fixed cost absorption tariffs", "gross margin highest over last two years"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 77,
+    "category": "F - Transcript management explanation",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, why did management say that robotaxi revenue and cost-per-mile metrics were not yet meaningful?",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State why the metrics were not considered meaningful", "Describe the deployment and validation stage", "Do not invent robotaxi revenue"],
+    "evidence_requests": [
+      {"id": "robotaxi_metrics", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["robotaxi early phase fleet deployment validation testing revenue cost per mile metrics not meaningful"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 78,
+    "category": "F - Transcript management explanation",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, which countries had record deliveries, and what did management say about the year-end backlog?",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["List every country named in the supporting passage", "State how management characterized the backlog", "Do not generalize the claim to all markets"],
+    "evidence_requests": [
+      {"id": "record_deliveries_and_backlog", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["record deliveries Malaysia Norway Poland Saudi Arabia Taiwan ended 2025 bigger backlog recent years"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 79,
+    "category": "G - Transcript guidance",
+    "question": "According to Tesla's fiscal Q4 2025 earnings-call transcript, what did Tesla say about its energy-storage backlog, Megapack 3 and Megablock, expected deployments, and margin pressure for 2026?",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2026"],
+    "answer_requirements": ["State the backlog characterization", "Name the announced products", "State the deployment outlook", "State the expected sources of margin pressure"],
+    "evidence_requests": [
+      {"id": "energy_storage_outlook_2026", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["2026 backlog strong diversified globally increasing deployments Megapack 3 Mega Block margin compression", "low-cost competition policy uncertainty tariffs energy"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 80,
+    "category": "F - Transcript management explanation",
+    "question": "On Tesla's fiscal Q4 2025 earnings-call transcript, why did Elon Musk describe completion of the AI5 chip design as one of the company's most critical priorities?",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["Preserve the named-speaker attribution only if supported", "Explain the stated importance of the chip to Tesla and Optimus", "Do not add technical specifications absent from evidence"],
+    "evidence_requests": [
+      {"id": "ai5_priority", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["completing AI5 chip design number one most critical thing spending more time", "Optimus useless without AI chip existential Tesla"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 81,
+    "category": "H - Derived financial ratios",
+    "question": "Using Microsoft's 2025 10-K, calculate research and development expense as a percentage of total revenue for fiscal 2025. State both inputs and the percentage rounded to one decimal place.",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["10K"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State R&D expense", "State total revenue", "Calculate R&D divided by revenue times 100", "Round only the final percentage to one decimal place"],
+    "evidence_requests": [
+      {"id": "rd_expense", "ticker": "MSFT", "year": "2025", "doc_type": "10K", "source": "MSFT_2025_10K.pdf", "search_queries": ["Research and development 2025 32,488 consolidated income statements"]},
+      {"id": "total_revenue", "ticker": "MSFT", "year": "2025", "doc_type": "10K", "source": "MSFT_2025_10K.pdf", "search_queries": ["Revenue 2025 281,724 consolidated income statements"]}
+    ],
+    "calculation_operations": ["percentage_of"]
+  },
+  {
+    "id": 82,
+    "category": "H - Derived financial ratios",
+    "question": "Using Tesla's 2025 10-K, calculate gross profit as a percentage of total revenue for 2025. State both inputs and the percentage rounded to one decimal place.",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["10K"]},
+    "fact_years": ["2025"],
+    "answer_requirements": ["State total gross profit", "State total revenue", "Calculate gross profit divided by revenue times 100", "Round only the final percentage to one decimal place"],
+    "evidence_requests": [
+      {"id": "gross_profit", "ticker": "TSLA", "year": "2025", "doc_type": "10K", "source": "TSLA_2025_10K.pdf", "search_queries": ["Total gross profit 2025 17,094 total revenues 94,827 results operations"]},
+      {"id": "total_revenue", "ticker": "TSLA", "year": "2025", "doc_type": "10K", "source": "TSLA_2025_10K.pdf", "search_queries": ["Total revenues 2025 94,827 consolidated statements operations"]}
+    ],
+    "calculation_operations": ["percentage_of"]
+  },
+  {
+    "id": 83,
+    "category": "H - Derived financial ratios",
+    "question": "According to Microsoft's 2025 10-K, by how much did total current liabilities change from fiscal 2024 to fiscal 2025, in dollars and percentage terms?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["10K"]},
+    "fact_years": ["2025", "2024"],
+    "answer_requirements": ["State both reported current-liability values", "Calculate the dollar increase", "Calculate percentage change using 2024 as the denominator", "Round only the final percentage to one decimal place"],
+    "evidence_requests": [
+      {"id": "current_liabilities_2025_2024", "ticker": "MSFT", "year": "2025", "doc_type": "10K", "source": "MSFT_2025_10K.pdf", "search_queries": ["Total current liabilities 2025 141,218 2024 125,286 balance sheets"]}
+    ],
+    "calculation_operations": ["difference", "percentage_change"]
+  },
+  {
+    "id": 84,
+    "category": "H - Derived financial ratios",
+    "question": "According to Tesla's 2024 10-K, by how much did energy generation and storage revenue change from 2023 to 2024, in dollars and percentage terms?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["10K"]},
+    "fact_years": ["2024", "2023"],
+    "answer_requirements": ["State both reported revenue values", "Calculate the dollar increase", "Calculate percentage change using 2023 as the denominator", "Round only the final percentage to one decimal place"],
+    "evidence_requests": [
+      {"id": "energy_revenue_2024_2023", "ticker": "TSLA", "year": "2024", "doc_type": "10K", "source": "TSLA_2024_10K.pdf", "search_queries": ["Energy generation and storage revenue 2024 10,086 2023 6,035 consolidated statements operations"]}
+    ],
+    "calculation_operations": ["difference", "percentage_change"]
+  },
+  {
+    "id": 85,
+    "category": "H - Derived financial ratios",
+    "question": "According to Tesla's 2024 10-K, by how much did net cash provided by operating activities change from 2023 to 2024, in dollars and percentage terms?",
+    "scope": {"tickers": ["TSLA"], "years": ["2024"], "doc_types": ["10K"]},
+    "fact_years": ["2024", "2023"],
+    "answer_requirements": ["State both reported operating-cash-flow values", "Calculate the dollar increase", "Calculate percentage change using 2023 as the denominator", "Round only the final percentage to one decimal place"],
+    "evidence_requests": [
+      {"id": "operating_cash_flow_2024_2023", "ticker": "TSLA", "year": "2024", "doc_type": "10K", "source": "TSLA_2024_10K.pdf", "search_queries": ["Net cash provided by operating activities 2024 14,923 2023 13,256 summary cash flows"]}
+    ],
+    "calculation_operations": ["difference", "percentage_change"]
+  },
+  {
+    "id": 86,
+    "category": "I - Cross-document transcript comparison",
+    "question": "Compare Microsoft's fiscal 2024 earnings-call transcript with its fiscal 2025 earnings-call transcript for commercial remaining performance obligation. State both values and the dollar increase.",
+    "scope": {"tickers": ["MSFT"], "years": ["2024", "2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024", "2025"],
+    "answer_requirements": ["State each transcript's commercial RPO", "Calculate 2025 minus 2024", "Preserve USD billions as the unit"],
+    "evidence_requests": [
+      {"id": "rpo_2024", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["commercial remaining performance obligation 269 billion"]},
+      {"id": "rpo_2025", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["commercial remaining performance obligation 368 billion"]}
+    ],
+    "calculation_operations": ["difference"]
+  },
+  {
+    "id": 87,
+    "category": "I - Cross-document transcript comparison",
+    "question": "Compare Microsoft's fiscal 2024 earnings-call transcript with its fiscal 2025 earnings-call transcript: state the reported fiscal Q4 2024 Cloud gross margin and the fiscal Q1 2026 Cloud gross-margin guidance, clearly distinguishing the result from guidance.",
+    "scope": {"tickers": ["MSFT"], "years": ["2024", "2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024", "2026"],
+    "answer_requirements": ["State the fiscal Q4 2024 reported percentage", "State the fiscal Q1 2026 guided percentage", "Do not present guidance as a reported result"],
+    "evidence_requests": [
+      {"id": "reported_margin_2024", "ticker": "MSFT", "year": "2024", "doc_type": "TRANSCRIPT", "source": "MSFT_2024_TRANSCRIPT.html", "search_queries": ["Microsoft Cloud gross margin percentage 69% fiscal Q4"]},
+      {"id": "guided_margin_2026", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["Microsoft Cloud gross margin percentage should be roughly 67%"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 88,
+    "category": "J - Filing and transcript synthesis",
+    "question": "What did Microsoft's fiscal Q4 2025 earnings-call transcript say about AI-infrastructure spending and capacity, what datacenter dependencies did its 2025 10-K describe, and how do those observations frame capacity expansion when considered together?",
+    "scope": {"tickers": ["MSFT"], "years": ["2025"], "doc_types": ["10K", "TRANSCRIPT"]},
+    "fact_years": ["2025", "2026"],
+    "answer_requirements": ["Summarize transcript evidence about spending or capacity", "Summarize 10-K datacenter dependencies", "Connect the evidence without claiming causation beyond the sources"],
+    "evidence_requests": [
+      {"id": "transcript_ai_infrastructure", "ticker": "MSFT", "year": "2025", "doc_type": "TRANSCRIPT", "source": "MSFT_2025_TRANSCRIPT.html", "search_queries": ["capital expenditures over 30 billion AI infrastructure capacity constrained", "cloud infrastructure buildouts strong demand"]},
+      {"id": "filing_datacenter_dependencies", "ticker": "MSFT", "year": "2025", "doc_type": "10K", "source": "MSFT_2025_10K.pdf", "search_queries": ["datacenters depend on permitted buildable land predictable energy networking supplies servers graphics processing units", "clean energy transition environmental regulations geopolitical disruptions"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 89,
+    "category": "J - Filing and transcript synthesis",
+    "question": "Using Tesla's 2025 10-K and fiscal Q4 2025 earnings-call transcript, how does the quarterly automotive-margin commentary compare with the annual automotive results?",
+    "scope": {"tickers": ["TSLA"], "years": ["2025"], "doc_types": ["10K", "TRANSCRIPT"]},
+    "fact_years": ["2025", "2024"],
+    "answer_requirements": ["State the annual automotive result or change supported by the filing", "State that quarterly automotive margin excluding credits improved from 15.4% to 17.9%", "State the transcript's explanation that automotive gross profit was flat despite 16% lower deliveries primarily because of regional mix", "Keep annual and quarterly periods distinct", "Do not apply energy or services margin commentary to automotive results", "Do not claim that one source proves every driver in the other"],
+    "evidence_requests": [
+      {"id": "filing_automotive_results", "ticker": "TSLA", "year": "2025", "doc_type": "10K", "source": "TSLA_2025_10K.pdf", "search_queries": ["automotive revenues gross profit gross margin 2025 compared 2024", "automotive results operations 2025"]},
+      {"id": "transcript_margin_pressures", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["automotive margins excluding credits improved sequentially 15.4% 17.9%", "automotive gross profit flat sequentially 16% lower deliveries regional mix APAC EMEA"]}
+    ],
+    "calculation_operations": []
+  },
+  {
+    "id": 90,
+    "category": "I - Cross-document transcript comparison",
+    "question": "Compare Tesla's fiscal 2024 and fiscal 2025 earnings-call transcripts: summarize the 2024 energy-storage deployment and supply commentary, then state the fiscal 2025 call's backlog, new-product, deployment, and margin outlook for 2026.",
+    "scope": {"tickers": ["TSLA"], "years": ["2024", "2025"], "doc_types": ["TRANSCRIPT"]},
+    "fact_years": ["2024", "2025", "2026"],
+    "answer_requirements": ["Summarize 2024 deployment and supply commentary", "Summarize the fiscal 2025 call's backlog, product, deployment, and margin outlook for 2026", "Preserve the time periods and forward-looking status"],
+    "evidence_requests": [
+      {"id": "energy_commentary_2024", "ticker": "TSLA", "year": "2024", "doc_type": "TRANSCRIPT", "source": "TSLA_2024_TRANSCRIPT.html", "search_queries": ["energy storage deployments all-time high Megapack Powerwall supply constrained Megafactory Shanghai"]},
+      {"id": "energy_commentary_2025", "ticker": "TSLA", "year": "2025", "doc_type": "TRANSCRIPT", "source": "TSLA_2025_TRANSCRIPT.html", "search_queries": ["energy storage backlog strong diversified Megapack 3 Mega Block increasing deployments margin compression"]}
+    ],
+    "calculation_operations": []
+  }
+]

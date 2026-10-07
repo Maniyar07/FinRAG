@@ -22,6 +22,9 @@ class CalculationOperation(str, Enum):
     RATIO = "ratio"
     CAGR = "cagr"
     SUM = "sum"
+    PRODUCT = "product"
+    ABSOLUTE_VALUE = "absolute_value"
+    PERCENT_COMPLEMENT = "percent_complement"
 
 
 class CalculationRequest(FinancialModel):
@@ -48,11 +51,17 @@ class CalculationRequest(FinancialModel):
             CalculationOperation.DIFFERENCE,
             CalculationOperation.RATIO,
             CalculationOperation.CAGR,
+            CalculationOperation.PRODUCT,
         }
         if self.operation in binary and len(self.input_fact_ids) != 2:
             raise ValueError(f"{self.operation.value} requires exactly two facts")
         if self.operation == CalculationOperation.SUM and not self.input_fact_ids:
             raise ValueError("sum requires at least one fact")
+        if self.operation in {
+            CalculationOperation.ABSOLUTE_VALUE,
+            CalculationOperation.PERCENT_COMPLEMENT,
+        } and len(self.input_fact_ids) != 1:
+            raise ValueError(f"{self.operation.value} requires exactly one fact")
         if self.operation == CalculationOperation.CAGR and self.periods is None:
             raise ValueError("cagr requires a positive periods value")
         if self.operation != CalculationOperation.CAGR and self.periods is not None:
@@ -219,7 +228,6 @@ class FinancialCalculator:
                 result_unit = "percentage_points"
             currency, scale = None, None
         elif operation == CalculationOperation.RATIO:
-            _require_compatible(facts)
             numerator, denominator = facts
             if denominator.base_value == 0:
                 raise ValueError("Ratio is undefined when the denominator is zero.")
@@ -228,7 +236,63 @@ class FinancialCalculator:
             substituted = (
                 f"{_display(numerator.base_value)} / {_display(denominator.base_value)}"
             )
-            result_unit, currency, scale = "ratio", None, None
+            if _compatible(numerator, denominator):
+                result_unit, currency, scale = "ratio", None, None
+            elif (
+                numerator.value_type == ValueType.CURRENCY
+                and denominator.value_type == ValueType.COUNT
+            ):
+                result_unit = "per_share"
+                currency = numerator.currency
+                scale = None
+            else:
+                raise ValueError(
+                    "Ratio inputs have incompatible units or currencies."
+                )
+        elif operation == CalculationOperation.PRODUCT:
+            left, right = facts
+            dimensionless = {
+                ValueType.PERCENT,
+                ValueType.RATIO,
+                ValueType.NUMBER,
+            }
+            dimensional = [fact for fact in facts if fact.value_type not in dimensionless]
+            if len(dimensional) > 1:
+                raise ValueError(
+                    "Product supports at most one currency, count, or per-share input."
+                )
+
+            def factor(fact: ValidatedFinancialFact) -> Decimal:
+                if fact.value_type == ValueType.PERCENT:
+                    return fact.numeric_value / Decimal("100")
+                if fact.value_type in dimensionless:
+                    return fact.numeric_value
+                return fact.base_value
+
+            base_result = factor(left) * factor(right)
+            reference = dimensional[0] if dimensional else None
+            if reference is not None:
+                result = _scale_result(base_result, reference)
+                result_unit, currency, scale = self._same_unit_result(reference)
+            else:
+                result = base_result
+                result_unit, currency, scale = "ratio", None, None
+            formula = "left * right"
+            substituted = f"{_display(factor(left))} * {_display(factor(right))}"
+        elif operation == CalculationOperation.ABSOLUTE_VALUE:
+            value = facts[0]
+            result = abs(value.numeric_value)
+            formula = "abs(value)"
+            substituted = f"abs({_display(value.numeric_value)})"
+            result_unit, currency, scale = self._same_unit_result(value)
+        elif operation == CalculationOperation.PERCENT_COMPLEMENT:
+            value = facts[0]
+            if value.value_type != ValueType.PERCENT:
+                raise ValueError("Percent complement requires a percent-valued fact.")
+            result = Decimal("100") - value.numeric_value
+            formula = "100 - percent"
+            substituted = f"100 - {_display(value.numeric_value)}"
+            result_unit, currency, scale = "percent", None, None
         elif operation == CalculationOperation.CAGR:
             _require_compatible(facts)
             _require_same_series(facts)

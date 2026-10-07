@@ -579,7 +579,11 @@ class ChatService:
             and hasattr(lookup, "statement_rows")
             and not understanding.wants_table
         ):
-            direct_rows = lookup.statement_rows(effective_question, resolution.scope)
+            direct_rows = lookup.statement_rows(
+                effective_question,
+                resolution.scope,
+                value_years=understanding.reference_years,
+            )
             direct_bundle, direct_rows = self._with_statement_rows(
                 RetrievalBundle(
                     "", [], resolution.scope, 0,
@@ -639,7 +643,11 @@ class ChatService:
                 and hasattr(lookup, "statement_rows")
                 and not understanding.wants_table
             ):
-                verified_rows = lookup.statement_rows(effective_question, resolution.scope)
+                verified_rows = lookup.statement_rows(
+                    effective_question,
+                    resolution.scope,
+                    value_years=understanding.reference_years,
+                )
                 bundle, verified_rows = self._with_statement_rows(bundle, verified_rows)
         except Exception as error:
             trace["error_type"] = type(error).__name__

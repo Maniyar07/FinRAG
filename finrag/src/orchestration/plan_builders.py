@@ -38,6 +38,8 @@ def _change_operations(question: str) -> tuple[CalculationOperation, ...]:
         return (CalculationOperation.CAGR,)
     if "ratio" in lowered:
         return (CalculationOperation.RATIO,)
+    if re.search(r"\bdifferences?\b", lowered):
+        return (CalculationOperation.DIFFERENCE,)
     requests_change = bool(re.search(r"\bchanges?\b", lowered))
     operations = tuple(
         operation
@@ -96,6 +98,50 @@ def allowed_document_types(scope: Scope) -> frozenset[str]:
     if scope.doc_type:
         return frozenset((scope.doc_type,))
     return frozenset(("10K", "TRANSCRIPT"))
+
+
+def reported_change_plan(*, question: str, permitted_scope: Scope) -> MultiHopPlan:
+    """Retrieve source-reported changes and their explanations without inventing math."""
+    if re.search(
+        r"\b(?:calculate|compute|difference|ratio|cagr|basis points?|"
+        r"percentage[- ]points?|sum)\b",
+        question,
+        re.IGNORECASE,
+    ):
+        raise ValueError("Explicit arithmetic requires a numeric calculation plan.")
+    if not re.search(
+        r"\b(?:by\s+how\s+much|how\s+(?:did|fast)|drivers?|factors?|"
+        r"what\s+drove|year[- ]over[- ]year)\b",
+        question,
+        re.IGNORECASE,
+    ):
+        raise ValueError("Question is not a source-reported change request.")
+
+    allowed_types = allowed_document_types(permitted_scope)
+    if permitted_scope.doc_type:
+        document_type = permitted_scope.doc_type
+    elif "transcript" in question.casefold() or "earnings call" in question.casefold():
+        document_type = "TRANSCRIPT"
+    elif "10K" in allowed_types:
+        document_type = "10K"
+    else:
+        document_type = next(iter(sorted(allowed_types)))
+    groups = tuple(
+        EvidenceGroup(ticker=ticker, fiscal_year=year)
+        for ticker, year in permitted_scope.groups
+    )
+    return MultiHopPlan(
+        original_question=question,
+        requirements=(
+            EvidenceRequirement(
+                requirement_id="reported_change_and_explanation",
+                question=question,
+                evidence_type=EvidenceType.NARRATIVE,
+                document_type=document_type,
+                groups=groups,
+            ),
+        ),
+    )
 
 
 def staged_sum_ratio_plan(*, question: str, permitted_scope: Scope) -> MultiHopPlan:
@@ -382,6 +428,12 @@ def _comparison_fallback(
         re.IGNORECASE,
     )
     if metric_match is None:
+        metric_match = re.search(
+            r"\bcompare\s+(.+?)\s+(?:for|at)\s+.+?\b(?=(?:19|20)\d{2})",
+            search_question,
+            re.IGNORECASE,
+        )
+    if metric_match is None:
         raise ValueError("Deterministic comparison fallback could not identify a metric.")
     metric = (
         metric_match.group("metric")
@@ -485,6 +537,126 @@ def _comparison_fallback(
     operations = _change_operations(question)
 
     calculations: list[PlannedCalculation] = []
+    tickers = tuple(dict.fromkeys(group.ticker for group in all_groups))
+    years = tuple(dict.fromkeys(group.fiscal_year for group in all_groups))
+    if (
+        operations == (CalculationOperation.DIFFERENCE,)
+        and len(tickers) == 2
+        and len(years) == 1
+    ):
+        year = years[0]
+        combined_cash = (
+            "combined" in metric.casefold()
+            and "cash" in metric.casefold()
+            and "equivalent" in metric.casefold()
+            and "short-term investment" in metric.casefold()
+        )
+        if combined_cash:
+            requirements = []
+            calculations = []
+            for ticker in tickers:
+                cash_id = f"reported_cash_equivalents_{ticker.casefold()}"
+                investments_id = f"reported_short_term_investments_{ticker.casefold()}"
+                group = EvidenceGroup(ticker=ticker, fiscal_year=year)
+                requirements.extend(
+                    (
+                        EvidenceRequirement(
+                            requirement_id=cash_id,
+                            question=(
+                                f"Find the exact cash and cash equivalents table value "
+                                f"for {ticker} in source fiscal year {year}."
+                            ),
+                            evidence_type=EvidenceType.NUMERIC,
+                            document_type=numeric_type,
+                            groups=(group,),
+                        ),
+                        EvidenceRequirement(
+                            requirement_id=investments_id,
+                            question=(
+                                f"Find the exact short-term investments table value for "
+                                f"{ticker} in source fiscal year {year}."
+                            ),
+                            evidence_type=EvidenceType.NUMERIC,
+                            document_type=numeric_type,
+                            groups=(group,),
+                        ),
+                    )
+                )
+                calculations.append(
+                    PlannedCalculation(
+                        calculation_id=f"{ticker.casefold()}_combined_cash",
+                        label=f"{ticker} combined cash and short-term investments",
+                        operation=CalculationOperation.SUM,
+                        inputs=(
+                            FactReference(
+                                requirement_id=cash_id,
+                                ticker=ticker,
+                                fiscal_year=year,
+                                metric_hint="cash and cash equivalents",
+                            ),
+                            FactReference(
+                                requirement_id=investments_id,
+                                ticker=ticker,
+                                fiscal_year=year,
+                                metric_hint="short-term investments",
+                            ),
+                        ),
+                    )
+                )
+            calculations.append(
+                PlannedCalculation(
+                    calculation_id="combined_cash_cross_company_difference",
+                    label=f"{tickers[0]} minus {tickers[1]} combined cash",
+                    operation=CalculationOperation.DIFFERENCE,
+                    inputs=tuple(
+                        CalculationReference(
+                            calculation_id=f"{ticker.casefold()}_combined_cash"
+                        )
+                        for ticker in tickers
+                    ),
+                )
+            )
+            return MultiHopPlan(
+                original_question=question,
+                requirements=tuple(requirements),
+                calculations=tuple(calculations),
+            )
+        requirements = [
+            EvidenceRequirement(
+                requirement_id=f"{numeric_id}_{ticker.casefold()}",
+                question=(
+                    f"Find the exact reported {metric} table value for {ticker} "
+                    f"in source fiscal year {year}, preserving row, period, units, "
+                    "and scale."
+                ),
+                evidence_type=EvidenceType.NUMERIC,
+                document_type=numeric_type,
+                groups=(EvidenceGroup(ticker=ticker, fiscal_year=year),),
+            )
+            for ticker in tickers
+        ]
+        calculations.append(
+            PlannedCalculation(
+                calculation_id=f"{metric_id}_cross_company_difference",
+                label=f"{tickers[0]} minus {tickers[1]} {metric}",
+                operation=CalculationOperation.DIFFERENCE,
+                inputs=tuple(
+                    FactReference(
+                        requirement_id=f"{numeric_id}_{ticker.casefold()}",
+                        ticker=ticker,
+                        fiscal_year=year,
+                        metric_hint=metric,
+                    )
+                    for ticker in tickers
+                ),
+            )
+        )
+        return MultiHopPlan(
+            original_question=question,
+            requirements=tuple(requirements),
+            calculations=tuple(calculations),
+        )
+
     for ticker in dict.fromkeys(group.ticker for group in all_groups):
         ticker_groups = sorted(
             (group for group in all_groups if group.ticker == ticker),

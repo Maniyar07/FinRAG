@@ -198,6 +198,101 @@ def test_requested_statement_rows_use_matching_year_and_metric(tmp_path) -> None
     assert all(row.year == "2025" and row.scale == "millions" for row in rows)
 
 
+def test_statement_rows_select_requested_comparative_column(tmp_path) -> None:
+    _parent(
+        tmp_path, "comparative", ticker="TSLA", year="2024", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Consolidated Statements of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2024</th><th>2023</th></tr>"
+            "<tr><td>Total automotive revenues</td>"
+            "<td>77,070</td><td>82,419</td></tr></table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What were total automotive revenues in comparative year 2023?",
+        Scope(tickers=("TSLA",), years=("2024",), doc_type="10K"),
+        value_years=("2023",),
+    )
+
+    assert [(row.label, row.year, row.value) for row in rows] == [
+        ("Total automotive revenues", "2023", "82,419")
+    ]
+
+
+def test_statement_rows_never_treat_multirow_headers_as_financial_facts(tmp_path) -> None:
+    _parent(
+        tmp_path, "combined-cash", ticker="MSFT", year="2025", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Balance Sheets\n(in millions)\n"
+            "<table><thead>"
+            "<tr><th rowspan='2'>(In millions, except percentages and per share amounts)</th>"
+            "<th></th><th></th></tr>"
+            "<tr><th>2025</th><th>2024</th></tr></thead><tbody>"
+            "<tr><td>Total cash, cash equivalents, and short-term investments</td>"
+            "<td>94,565</td><td>75,543</td></tr></tbody></table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What was the combined amount of cash, cash equivalents, and "
+        "short-term investments in 2025?",
+        Scope(tickers=("MSFT",), years=("2025",), doc_type="10K"),
+    )
+
+    assert [(row.label, row.year, row.value) for row in rows] == [
+        ("Total cash, cash equivalents, and short-term investments", "2025", "94,565")
+    ]
+
+
+def test_statement_rows_use_group_heading_to_disambiguate_metric(tmp_path) -> None:
+    _parent(
+        tmp_path, "segments", item="Item 7", section="Item 7. MD&A",
+        body=(
+            "## Segment Results of Operations\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>2025</th></tr>"
+            "<tr><td colspan='2'>Intelligent Cloud</td></tr>"
+            "<tr><td>Operating income</td><td>44,589</td></tr>"
+            "<tr><td colspan='2'>Total</td></tr>"
+            "<tr><td>Operating income</td><td>128,528</td></tr></table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What was Intelligent Cloud operating income in 2025?",
+        Scope(tickers=("MSFT",), years=("2025",), doc_type="10K"),
+    )
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Intelligent Cloud Operating income", "44,589")
+    ]
+
+
+def test_statement_rows_accept_date_and_year_in_one_header_cell(tmp_path) -> None:
+    _parent(
+        tmp_path, "balance", ticker="TSLA", item="Item 8",
+        section="Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+        body=(
+            "## Consolidated Balance Sheets\n(in millions)\n"
+            "<table><tr><th>Metric</th><th>December 31, 2025</th>"
+            "<th>December 31, 2024</th></tr>"
+            "<tr><td>Total assets</td><td>137,806</td><td>122,070</td>"
+            "</tr></table>"
+        ),
+    )
+
+    rows = StructuredDocumentLookup(tmp_path).statement_rows(
+        "What were total assets in 2025?",
+        Scope(tickers=("TSLA",), years=("2025",), doc_type="10K"),
+    )
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Total assets", "137,806")
+    ]
+
+
 def test_statement_rows_ignore_numeric_period_structure(tmp_path) -> None:
     _parent(
         tmp_path, "operations-period-row", item="Item 8",

@@ -387,7 +387,11 @@ class AgentResearchSession:
             if expected is not None:
                 source_map = {
                     str(source.get("id")): source
-                    for source in self.bundle().sources
+                    # Use every source already collected. bundle() deliberately
+                    # narrows evidence to completed calculations, which would
+                    # hide sources needed by the next calculation in a staged
+                    # or cross-company plan.
+                    for source in self.merger.sources
                 }
                 facts_by_requirement = {
                     str(trace.get("requirement_id")): tuple(

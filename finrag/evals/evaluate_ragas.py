@@ -153,11 +153,17 @@ def load_generated_answers(
             raise ValueError(
                 f"Generated result {record_id} has invalid retrieved_sources."
             )
-        if not has_generation_error and (
-            not row["answer"].strip() or not any(context.strip() for context in contexts)
+        if not has_generation_error and not row["answer"].strip():
+            raise ValueError(
+                f"Generated result {record_id} needs a non-empty answer."
+            )
+        if (
+            not has_generation_error
+            and row["decision"] == "answered"
+            and not any(context.strip() for context in contexts)
         ):
             raise ValueError(
-                f"Generated result {record_id} needs a non-empty answer and context."
+                f"Answered result {record_id} needs a non-empty answer and context."
             )
         selected.append(row)
     return selected
@@ -279,25 +285,52 @@ async def score_one(
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    answered_rows = [
+        row
+        for row in rows
+        if row.get("decision") == "answered" and not row.get("error")
+    ]
     means: dict[str, float | None] = {}
+    counts: dict[str, int] = {}
     for name in METRIC_NAMES:
         values = [
             float(row[name])
-            for row in rows
+            for row in answered_rows
             if isinstance(row.get(name), (int, float))
             and math.isfinite(float(row[name]))
         ]
+        counts[name] = len(values)
         means[name] = round(fmean(values), 4) if values else None
 
     available = [value for value in means.values() if value is not None]
     answered = sum(row.get("decision") == "answered" for row in rows)
+    scored_rows = sum(
+        any(isinstance(row.get(name), (int, float)) for name in METRIC_NAMES)
+        for row in answered_rows
+    )
+    final_score = round(fmean(available), 4) if available else None
+    answer_success_rate = round(answered / len(rows), 4) if rows else None
     return {
         "questions_evaluated": len(rows),
         "answered": answered,
-        "answer_success_rate": round(answered / len(rows), 4) if rows else None,
+        "answer_success_rate": answer_success_rate,
+        "scored_answered_rows": scored_rows,
+        "metric_coverage_rate": (
+            round(scored_rows / len(rows), 4) if rows else None
+        ),
         "metric_means": means,
-        "final_ragas_score": round(fmean(available), 4) if available else None,
-        "final_score_note": "Unweighted mean of the five requested RAGAS metrics.",
+        "metric_counts": counts,
+        "final_ragas_score": final_score,
+        "coverage_adjusted_score": (
+            round(final_score * answer_success_rate, 4)
+            if final_score is not None and answer_success_rate is not None
+            else None
+        ),
+        "final_score_note": (
+            "Unweighted mean of the five requested RAGAS metrics over answered "
+            "rows only; answer coverage and the coverage-adjusted score are "
+            "reported separately."
+        ),
         "scope_match_rate": (
             round(sum(row.get("scope_match") is True for row in rows) / len(rows), 4)
             if rows
@@ -406,7 +439,7 @@ def _generate_row(service: Any, record: dict[str, Any]) -> dict[str, Any]:
         )
         if not _clean_answer(row["answer"]):
             raise RuntimeError("ChatService returned an empty answer.")
-        if not contexts:
+        if decision == "answered" and not contexts:
             raise RuntimeError("ChatService returned no retrieved evidence text.")
     except Exception as error:
         row["error"] = f"{type(error).__name__}: {error}"
@@ -430,6 +463,9 @@ async def _score_row(
 ) -> dict[str, Any]:
     if row.get("error"):
         return row
+    if row.get("decision") != "answered":
+        row["score_status"] = f"not_scored_decision:{row.get('decision')}"
+        return row
     answer = _clean_answer(str(row["answer"]))
     contexts = [
         context.strip()
@@ -450,6 +486,7 @@ async def _score_row(
         reference=str(row["reference"]),
     )
     row.update(scores)
+    row["score_status"] = "scored"
     if metric_errors:
         row["metric_errors"] = metric_errors
     return row

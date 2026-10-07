@@ -94,10 +94,30 @@ def _result_value(result: object, *, margin_ratio: bool) -> str:
     return f"{value} {unit}".strip()
 
 
-def _operation_label(result: object, *, margin_ratio: bool) -> str:
+def _operation_label(
+    result: object, *, margin_ratio: bool, ratio_label: str = ""
+) -> str:
     if margin_ratio:
-        return "Net profit margin"
+        return ratio_label or "Percentage"
     return str(result.operation.value).replace("_", " ").capitalize()
+
+
+def _percentage_ratio_label(inputs: list[object], question: str, fallback: str) -> str:
+    """Name percentage ratios from their validated numerator and denominator."""
+    if re.search(r"\bnet\s+(?:profit\s+)?margin\b", question, re.IGNORECASE):
+        return "Net profit margin"
+    if len(inputs) >= 2:
+        numerator = str(
+            getattr(inputs[0], "metric", "")
+            or getattr(inputs[0], "row_label", "")
+        ).strip()
+        denominator = str(
+            getattr(inputs[1], "metric", "")
+            or getattr(inputs[1], "row_label", "")
+        ).strip()
+        if numerator and denominator:
+            return f"{numerator} as a percentage of {denominator}"
+    return fallback or "Percentage"
 
 
 def _requested_formula_line(result: object, question: str) -> str | None:
@@ -171,8 +191,30 @@ def verified_calculation_text(
         for source in getattr(bundle, "sources", ())
     }
     blocks: OrderedDict[tuple, dict] = OrderedDict()
+    referenced_calculations = {
+        fact_id
+        for item in execution.calculations
+        for fact_id in item.result.input_fact_ids
+        if fact_id in facts and any(
+            getattr(candidate, "calculation_id", None) == fact_id
+            for candidate in execution.calculations
+        )
+    }
+    show_intermediate_work = bool(
+        re.search(
+            r"\b(?:formula|show\s+(?:the\s+)?(?:calculation|work)|every\s+input|"
+            r"first\s+calculate|then\s+use|intermediate)\b",
+            question,
+            re.IGNORECASE,
+        )
+    )
 
     for item in execution.calculations:
+        if (
+            getattr(item, "calculation_id", None) in referenced_calculations
+            and not show_intermediate_work
+        ):
+            continue
         result = item.result
         inputs = [facts.get(fact_id) for fact_id in result.input_fact_ids]
         if any(fact is None for fact in inputs):
@@ -183,12 +225,17 @@ def verified_calculation_text(
         margin_ratio = result.result_unit == "ratio" and bool(
             re.search(r"\b(?:margin|percentage|percent)\b", f"{question} {item.label}", re.I)
         )
+        ratio_label = (
+            _percentage_ratio_label(inputs, question, metric)
+            if margin_ratio
+            else ""
+        )
         company_label, input_labels = _calculation_input_labels(
             inputs,
             source_years,
             margin_ratio=margin_ratio,
         )
-        title_metric = "Net profit margin" if margin_ratio else metric
+        title_metric = ratio_label if margin_ratio else metric
         key = (company_label, title_metric.casefold(), tuple(result.input_fact_ids))
         block = blocks.setdefault(
             key,
@@ -208,7 +255,7 @@ def verified_calculation_text(
         if formula_line and formula_line not in block["results"]:
             block["results"].append(formula_line)
         block["results"].append(
-            f"- **{_operation_label(result, margin_ratio=margin_ratio)}:** "
+            f"- **{_operation_label(result, margin_ratio=margin_ratio, ratio_label=ratio_label)}:** "
             f"**{_result_value(result, margin_ratio=margin_ratio)}**"
         )
 
@@ -288,7 +335,13 @@ def verified_statement_answer_text(
 
     rows_by_group: dict[tuple[str, str], list[VerifiedTableRow]] = {}
     for row in rows:
-        group = (str(row.source.get("ticker") or ""), str(row.year))
+        # Scope groups identify source documents. A 2024 filing can validly
+        # answer a request for its comparative 2023 column, so grouping by the
+        # table column year incorrectly makes that verified row look uncovered.
+        group = (
+            str(row.source.get("ticker") or ""),
+            str(row.source.get("fiscal_year") or ""),
+        )
         rows_by_group.setdefault(group, []).append(row)
     if any(len(rows_by_group.get(group, ())) != 1 for group in groups):
         return None

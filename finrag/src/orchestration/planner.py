@@ -16,6 +16,7 @@ from src.orchestration.plan_builders import (
     _margin_fallback,
     _mixed_source_change_fallback,
     allowed_document_types as _allowed_document_types,
+    reported_change_plan,
     staged_sum_ratio_plan,
 )
 from src.orchestration.plan_payload import (
@@ -23,6 +24,7 @@ from src.orchestration.plan_payload import (
     PlanPayload,
     parse_plan_payload,
 )
+from src.orchestration.formula_planner import formula_plan
 from src.schemas import Scope
 
 
@@ -142,6 +144,8 @@ class MultiHopPlanner:
     _mixed_source_change_fallback = staticmethod(_mixed_source_change_fallback)
     _margin_fallback = staticmethod(_margin_fallback)
     _comparison_fallback = staticmethod(_comparison_fallback)
+    _reported_change_fallback = staticmethod(reported_change_plan)
+    _formula_fallback = staticmethod(formula_plan)
     _parse_payload = staticmethod(parse_plan_payload)
 
     def __init__(self, *, chain: Any | None = None) -> None:
@@ -232,6 +236,20 @@ class MultiHopPlanner:
             except (TypeError, ValueError):
                 pass
 
+        # Financial formulas are data-driven expression trees loaded from the
+        # catalog.  The generic compiler emits the same validated requirements
+        # and calculation DAG used by every other multi-hop plan.
+        try:
+            fallback = self._formula_fallback(
+                question=cleaned,
+                permitted_scope=permitted_scope,
+            )
+            validate_plan_scope(fallback, permitted_scope)
+            validate_plan_completion(fallback, cleaned)
+            return fallback
+        except (TypeError, ValueError):
+            pass
+
         # The project's primary comparison shape is safer and cheaper to plan
         # deterministically. The model remains available for compound questions
         # that do not fit this exact metric/change pattern.
@@ -247,6 +265,16 @@ class MultiHopPlanner:
                 return fallback
             except (TypeError, ValueError):
                 pass
+
+        try:
+            fallback = self._reported_change_fallback(
+                question=cleaned,
+                permitted_scope=permitted_scope,
+            )
+            validate_plan_scope(fallback, permitted_scope)
+            return fallback
+        except (TypeError, ValueError):
+            pass
 
         feedback = "None."
         last_error: Exception | None = None

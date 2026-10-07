@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,6 +26,34 @@ COLLECTION_NAME = os.getenv("FINRAG_QDRANT_COLLECTION", "finrag_documents")
 EMBEDDING_MODEL = os.getenv("FINRAG_EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(os.getenv("FINRAG_EMBEDDING_DIMENSIONS", "1536"))
 LLM_MODEL = os.getenv("FINRAG_LLM_MODEL", "gpt-4o-mini")
+LLM_PRICING_MODEL = os.getenv(
+    "FINRAG_LLM_PRICING_MODEL", "gpt-4o-mini"
+).strip()
+
+
+def _usd_per_million(name: str, default: str) -> Decimal:
+    raw_value = os.getenv(name, default).strip()
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation as error:
+        raise ValueError(f"{name} must be a valid decimal number.") from error
+    if not value.is_finite() or value < 0:
+        raise ValueError(f"{name} must be a finite, non-negative number.")
+    return value
+
+
+# Default gpt-4o-mini text-token prices per 1M tokens. Keep pricing centralized
+# and override these environment variables when the configured model or provider
+# rates change.
+LLM_INPUT_USD_PER_MILLION = _usd_per_million(
+    "FINRAG_LLM_INPUT_USD_PER_1M", "0.15"
+)
+LLM_CACHED_INPUT_USD_PER_MILLION = _usd_per_million(
+    "FINRAG_LLM_CACHED_INPUT_USD_PER_1M", "0.075"
+)
+LLM_OUTPUT_USD_PER_MILLION = _usd_per_million(
+    "FINRAG_LLM_OUTPUT_USD_PER_1M", "0.60"
+)
 SEMANTIC_FALLBACK_ENABLED = os.getenv(
     "FINRAG_SEMANTIC_FALLBACK_ENABLED", "false"
 ).strip().casefold() in {"1", "true", "yes", "on"}
@@ -121,6 +150,8 @@ def validate_runtime_config(
         raise ValueError("FINRAG_EMBEDDING_DIMENSIONS must be positive.")
     if not EMBEDDING_MODEL.strip() or not LLM_MODEL.strip():
         raise ValueError("Embedding and LLM model names cannot be empty.")
+    if not LLM_PRICING_MODEL:
+        raise ValueError("FINRAG_LLM_PRICING_MODEL cannot be empty.")
     if not SEMANTIC_FALLBACK_MODEL:
         raise ValueError("FINRAG_SEMANTIC_FALLBACK_MODEL cannot be empty.")
     if SEMANTIC_FALLBACK_TIMEOUT_SECONDS <= 0:

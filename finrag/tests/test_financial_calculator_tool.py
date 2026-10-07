@@ -139,6 +139,69 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         self.assertEqual(ratio.result, Decimal("1.21"))
         self.assertAlmostEqual(float(cagr.result), 10.0, places=8)
 
+    def test_product_absolute_value_and_percent_complement(self) -> None:
+        income = fact("F1", "100")
+        tax_rate = fact(
+            "F2",
+            "21",
+            base_value="21",
+            value_type=ValueType.PERCENT,
+            unit="percent",
+            currency=None,
+            scale=None,
+            source_id="S2",
+        )
+        capex = fact("F3", "-25", source_id="S3")
+        facts = {item.fact_id: item for item in (income, tax_rate, capex)}
+
+        complement = self.tool.execute(
+            CalculationRequest(
+                operation="percent_complement", input_fact_ids=("F2",)
+            ),
+            available_facts=facts,
+        )
+        absolute = self.tool.execute(
+            CalculationRequest(operation="absolute_value", input_fact_ids=("F3",)),
+            available_facts=facts,
+        )
+        complement_fact = tax_rate.model_copy(
+            update={
+                "fact_id": "F4",
+                "numeric_value": complement.result,
+                "base_value": complement.result,
+            }
+        )
+        facts["F4"] = complement_fact
+        product = self.tool.execute(
+            CalculationRequest(operation="product", input_fact_ids=("F1", "F4")),
+            available_facts=facts,
+        )
+
+        self.assertEqual(complement.result, Decimal("79"))
+        self.assertEqual(absolute.result, Decimal("25"))
+        self.assertEqual(product.result, Decimal("79.00"))
+        self.assertEqual(product.result_unit, "currency")
+
+    def test_currency_divided_by_share_count_returns_per_share(self) -> None:
+        revenue = fact("F1", "100", scale="millions")
+        shares = fact(
+            "F2",
+            "20",
+            value_type=ValueType.COUNT,
+            unit="shares",
+            currency=None,
+            scale="millions",
+            source_id="S2",
+        )
+        result = self.tool.execute(
+            CalculationRequest(operation="ratio", input_fact_ids=("F1", "F2")),
+            available_facts={"F1": revenue, "F2": shares},
+        )
+
+        self.assertEqual(result.result, Decimal("5"))
+        self.assertEqual(result.result_unit, "per_share")
+        self.assertEqual(result.currency, "USD")
+
     def test_rejects_unknown_facts_zero_denominators_and_unit_mismatches(self) -> None:
         usd = fact("F1", "100")
         zero = fact("F0", "0")
@@ -213,6 +276,8 @@ class FinancialCalculatorToolTests(unittest.TestCase):
             {"operation": "sum", "input_fact_ids": ("F1", "F1")},
             {"operation": "sum", "input_fact_ids": ("F1",), "periods": 2},
             {"operation": "cagr", "input_fact_ids": ("F1", "F2")},
+            {"operation": "absolute_value", "input_fact_ids": ("F1", "F2")},
+            {"operation": "percent_complement", "input_fact_ids": ("F1", "F2")},
         )
         for payload in invalid_payloads:
             with self.subTest(payload=payload):

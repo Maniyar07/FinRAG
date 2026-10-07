@@ -3,6 +3,7 @@ from __future__ import annotations
 from langchain_openai import ChatOpenAI
 
 from src.config import LLM_MODEL, OPENAI_API_KEY, validate_runtime_config
+from src.telemetry import UsageCallbackHandler
 
 
 def get_llm_engine(
@@ -31,6 +32,7 @@ def get_llm_engine(
         timeout=timeout,
         max_retries=max_retries,
         max_tokens=max_tokens,
+        callbacks=[UsageCallbackHandler(selected_model)],
         model_kwargs=(
             {"parallel_tool_calls": parallel_tool_calls}
             if parallel_tool_calls is not None

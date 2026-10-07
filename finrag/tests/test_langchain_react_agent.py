@@ -572,3 +572,77 @@ def test_agent_recovers_only_pending_typed_calculations_after_searches() -> None
     assert result.trace["agent"]["stop_reason"] == "typed_checklist_recovered"
     assert result.trace["agent"]["recovered_calculations"] == 2
     assert result.trace["multihop"]["issues"] == []
+
+
+def test_later_typed_calculation_can_use_source_not_in_earlier_result() -> None:
+    executor = FakeExecutor()
+    requirements = tuple(
+        EvidenceRequirement(
+            requirement_id=f"revenue_{year}",
+            question=f"Find revenue for {year}.",
+            evidence_type="numeric",
+            document_type="10K",
+            groups=(EvidenceGroup(ticker="AAA", fiscal_year=year),),
+        )
+        for year in ("2024", "2025")
+    )
+    calculations = tuple(
+        PlannedCalculation(
+            calculation_id=f"revenue_sum_{year}",
+            label=f"Revenue sum {year}",
+            operation="sum",
+            inputs=(
+                FactReference(
+                    requirement_id=f"revenue_{year}",
+                    ticker="AAA",
+                    fiscal_year=year,
+                    metric_hint="total revenue",
+                ),
+            ),
+        )
+        for year in ("2024", "2025")
+    )
+    plan = MultiHopPlan(
+        original_question="Calculate each year's revenue.",
+        requirements=requirements,
+        calculations=calculations,
+    )
+    session = AgentResearchSession(
+        question=plan.original_question,
+        permitted_scope=Scope(("AAA",), ("2024", "2025"), "10K"),
+        executor=executor,
+        calculator=executor.calculator,
+        max_actions=6,
+        expected_plan=plan,
+    )
+    for requirement in requirements:
+        observation = json.loads(
+            session.search(
+                ResearchToolInput(
+                    requirement_id=requirement.requirement_id,
+                    query=requirement.question,
+                    evidence_type=requirement.evidence_type,
+                    document_type=requirement.document_type,
+                    groups=requirement.groups,
+                )
+            )
+        )
+        assert observation["status"] == "completed"
+
+    observations = []
+    for calculation in calculations:
+        observations.append(
+            json.loads(
+                session.calculate(
+                    CalculatorToolInput(
+                        calculation_id=calculation.calculation_id,
+                        label=calculation.label,
+                        operation=calculation.operation,
+                        input_fact_ids=("placeholder",),
+                    )
+                )
+            )
+        )
+
+    assert [item["status"] for item in observations] == ["completed", "completed"]
+    assert observations[1]["source_ids"] == ["S2"]

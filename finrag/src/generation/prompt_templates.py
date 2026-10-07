@@ -38,6 +38,7 @@ Financial table rules
 
 Response presentation rules
 19. Lead with the direct answer on its own line. Bold the primary total, metric, conclusion, or status when doing so improves readability.
+19a. If the question asks for a yes/no determination, begin with "Yes.", "No.", or "Not established from the evidence.", then give the supporting explanation.
 20. When an answer contains three or more parallel entries, place every entry on its own Markdown bullet or numbered-list line. Include a blank line before the list; never collapse a list into one paragraph with inline hyphens.
 21. Use short ``###`` headings for answers with distinct parts, such as Results, Management Explanation, Risk Changes, and Limitations. Do not add headings to a simple one-sentence answer.
 

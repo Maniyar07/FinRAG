@@ -307,6 +307,10 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertEqual(body["scope"]["doc_type"], "10K")
         self.assertEqual(body["sources"][0]["source"], "MSFT_2024_10K.pdf")
         self.assertIn("$245,122", body["answer"])
+        self.assertGreaterEqual(body["metrics"]["latency_ms"], 0)
+        self.assertEqual(body["metrics"]["llm_calls"], 0)
+        self.assertEqual(body["metrics"]["total_tokens"], 0)
+        self.assertEqual(body["metrics"]["estimated_cost_usd"], 0)
         self.assertNotIn("full_evidence_text", body["sources"][0])
         self.assertNotIn("parent_id", body["sources"][0])
         self.assertNotIn("source_hash", body["sources"][0])
@@ -424,6 +428,8 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertIsNotNone(match)
         final = json.loads(match.group(1))
         self.assertEqual(final["decision"], "answered")
+        self.assertIn("metrics", final)
+        self.assertGreaterEqual(final["metrics"]["latency_ms"], 0)
         self.assertEqual(len(FakeChatService.instances[0].calls), 1)
 
     def test_validation_and_semantic_errors_use_central_envelope(self) -> None:
@@ -467,6 +473,7 @@ class FastApiEndpointTests(unittest.TestCase):
         script = (project_root / "frontend/app.js").read_text(encoding="utf-8")
         markup = (project_root / "frontend/index.html").read_text(encoding="utf-8")
         self.assertNotIn(".innerHTML", script)
+        self.assertIn("LLM tokens", script)
         self.assertNotIn('type="file"', markup)
         self.assertNotIn("cdn", markup.lower())
 

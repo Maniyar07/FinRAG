@@ -13,6 +13,7 @@ from evals.evaluate_ragas import (
     load_generated_answers,
     run,
     score_one,
+    summarize,
 )
 from src.schemas import Decision, Scope
 
@@ -80,6 +81,29 @@ def _args(**overrides) -> SimpleNamespace:
 
 
 class EvaluateRagasTests(unittest.TestCase):
+    def test_summary_separates_answer_coverage_from_answered_quality(self) -> None:
+        answered = {
+            **_generated_row(),
+            **{name: 0.8 for name in (
+                "faithfulness", "context_precision", "context_recall",
+                "response_relevancy", "factual_correctness",
+            )},
+        }
+        refused = {
+            **_generated_row(),
+            "id": 2,
+            "decision": "insufficient_evidence",
+            "retrieved_contexts": [],
+        }
+
+        result = summarize([answered, refused])
+
+        self.assertEqual(result["answer_success_rate"], 0.5)
+        self.assertEqual(result["metric_coverage_rate"], 0.5)
+        self.assertEqual(result["final_ragas_score"], 0.8)
+        self.assertEqual(result["coverage_adjusted_score"], 0.4)
+        self.assertTrue(all(value == 1 for value in result["metric_counts"].values()))
+
     def test_clean_answer_removes_compact_citations_and_source_appendix(self) -> None:
         answer = (
             "Revenue was $245,122 million. [S1][S2]\n\n"

@@ -213,9 +213,15 @@ class PlannedCalculation(OrchestrationModel):
             CalculationOperation.DIFFERENCE,
             CalculationOperation.RATIO,
             CalculationOperation.CAGR,
+            CalculationOperation.PRODUCT,
         }
         if self.operation in binary and len(self.inputs) != 2:
             raise ValueError(f"{self.operation.value} requires exactly two inputs")
+        if self.operation in {
+            CalculationOperation.ABSOLUTE_VALUE,
+            CalculationOperation.PERCENT_COMPLEMENT,
+        } and len(self.inputs) != 1:
+            raise ValueError(f"{self.operation.value} requires exactly one input")
         if len(self.inputs) != len(set(self.inputs)):
             raise ValueError("calculation inputs must be unique")
         if self.operation == CalculationOperation.CAGR and self.periods is None:

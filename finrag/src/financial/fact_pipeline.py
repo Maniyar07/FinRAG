@@ -92,7 +92,10 @@ class FinancialFactPipeline:
                     index
                     for row in rows
                     for index, cell in enumerate(row.find_all("th", recursive=False))
-                    if " ".join(cell.get_text(" ", strip=True).split()) == period_year
+                    if re.search(
+                        rf"(?<!\d){re.escape(period_year)}(?!\d)",
+                        " ".join(cell.get_text(" ", strip=True).split()),
+                    )
                 ]
                 if len(set(year_columns)) != 1:
                     continue

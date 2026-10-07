@@ -256,6 +256,34 @@ class FinancialFactPipelineTests(unittest.TestCase):
         self.assertEqual(result.valid_facts[0].row_label, "Total revenues")
         self.assertEqual(result.valid_facts[0].currency, "USD")
 
+    def test_exact_row_recovery_accepts_date_qualified_year_header(self) -> None:
+        table = (
+            "## CONSOLIDATED BALANCE SHEETS\n(In millions)\n"
+            "<table><tr><th></th><th>December 31, 2025</th>"
+            "<th>December 31, 2024</th></tr>"
+            "<tr><td>Short-term investments</td><td>$27,546</td>"
+            "<td>$20,424</td></tr></table>"
+        )
+        evidence = {
+            **source(),
+            "ticker": "TSLA",
+            "fiscal_year": "2025",
+            "section": "Item 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA",
+            "evidence_text": table,
+            "full_evidence_text": table,
+        }
+
+        result = FinancialFactPipeline().recover_exact_table_row(
+            metric_hint="short-term investments",
+            period_year="2025",
+            sources=[evidence],
+            permitted_scope=Scope(("TSLA",), ("2025",), "10K"),
+        )
+
+        self.assertEqual(len(result.valid_facts), 1)
+        self.assertEqual(result.valid_facts[0].numeric_value, 27546)
+        self.assertEqual(result.valid_facts[0].row_label, "Short-term investments")
+
 
 if __name__ == "__main__":
     unittest.main()

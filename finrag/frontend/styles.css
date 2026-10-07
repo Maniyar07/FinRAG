@@ -1239,6 +1239,22 @@ select:hover:not(:disabled),
   text-transform: capitalize;
 }
 
+.response-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: -3px 0 12px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.response-metrics span + span::before {
+  margin-right: 5px;
+  content: "\00b7";
+}
+
 .scope-note {
   margin: -2px 0 11px;
   color: var(--accent);

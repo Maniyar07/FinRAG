@@ -238,6 +238,25 @@ class SourceView(ApiModel):
     evidence_text: str
 
 
+class RequestMetricsView(ApiModel):
+    latency_ms: float = Field(ge=0)
+    llm_calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    cached_input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    models: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_token_totals(self) -> RequestMetricsView:
+        if self.cached_input_tokens > self.input_tokens:
+            raise ValueError("cached_input_tokens cannot exceed input_tokens")
+        if self.total_tokens < self.input_tokens + self.output_tokens:
+            raise ValueError("total_tokens cannot be less than input plus output tokens")
+        return self
+
+
 class ChatResponse(ApiModel):
     request_id: str
     trace_id: str
@@ -246,6 +265,7 @@ class ChatResponse(ApiModel):
     scope: ScopeView
     inherited_fields: list[str]
     sources: list[SourceView]
+    metrics: RequestMetricsView
     pending_clarification: PendingClarificationPayload | None = None
     trace: dict[str, Any] | None = None
 

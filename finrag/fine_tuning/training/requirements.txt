@@ -1,0 +1,9 @@
+# Install in a separate training environment; do not add these packages to the
+# production FinRAG runtime until a model and deployment target are selected.
+torch>=2.4
+transformers==4.57.1
+datasets==4.1.1
+accelerate==1.10.1
+peft==0.17.1
+trl==0.24.0
+bitsandbytes==0.48.1

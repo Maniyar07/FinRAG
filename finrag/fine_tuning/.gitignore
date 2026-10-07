@@ -1,0 +1,5 @@
+work/
+artifacts/
+*.tmp
+__pycache__/
+*.py[cod]

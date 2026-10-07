@@ -171,6 +171,42 @@ class StructuredDocumentLookup:
     def _unit_heading(value: str) -> bool:
         return bool(re.match(r"^\(?in\s+(?:millions?|thousands?|billions?)\b", value, re.I))
 
+    @staticmethod
+    def _table_grid(table) -> list[list[str]]:
+        """Expand HTML row/column spans so header and value columns stay aligned."""
+        grid: list[list[str]] = []
+        active: dict[int, tuple[int, str]] = {}
+        for tr in table.find_all("tr"):
+            row: dict[int, str] = {
+                column: text for column, (_, text) in active.items()
+            }
+            additions: dict[int, tuple[int, str]] = {}
+            column = 0
+            for cell in tr.find_all(["th", "td"], recursive=False):
+                while column in row:
+                    column += 1
+                text = " ".join(cell.stripped_strings)
+                try:
+                    colspan = max(1, int(cell.get("colspan", "1")))
+                    rowspan = max(1, int(cell.get("rowspan", "1")))
+                except (TypeError, ValueError):
+                    colspan = rowspan = 1
+                for offset in range(colspan):
+                    target = column + offset
+                    row[target] = text
+                    if rowspan > 1:
+                        additions[target] = (rowspan - 1, text)
+                column += colspan
+            width = max(row, default=-1) + 1
+            grid.append([row.get(index, "") for index in range(width)])
+            active = {
+                column: (remaining - 1, text)
+                for column, (remaining, text) in active.items()
+                if remaining > 1
+            }
+            active.update(additions)
+        return grid
+
     def _table(self, question: str, scope: Scope) -> DirectAnswer | None:
         group = self._group(scope)
         if group is None:
@@ -261,7 +297,13 @@ class StructuredDocumentLookup:
             sources.append(self._source(source_id, parent_id, metadata, title))
         return DirectAnswer("\n".join(lines), sources, "document_items")
 
-    def statement_rows(self, question: str, scope: Scope) -> tuple[VerifiedTableRow, ...]:
+    def statement_rows(
+        self,
+        question: str,
+        scope: Scope,
+        *,
+        value_years: tuple[str, ...] = (),
+    ) -> tuple[VerifiedTableRow, ...]:
         """Find requested row/year cells in indexed 10-K statement tables."""
         group = self._group(scope)
         if group is None and len(scope.groups) > 1 and scope.doc_type == "10K":
@@ -276,15 +318,23 @@ class StructuredDocumentLookup:
                         doc_type="10K",
                         requested_groups=((ticker, year),),
                     ),
+                    value_years=value_years,
                 )
             )
         if group is None:
             return ()
+        requested_years = tuple(
+            dict.fromkeys(
+                year
+                for year in value_years
+                if re.fullmatch(r"(?:19|20)\d{2}", str(year))
+            )
+        ) or (group[1],)
         requested = self._terms(question) - self._terms(group[0])
-        chosen: dict[frozenset[str], VerifiedTableRow] = {}
-        ambiguous: set[frozenset[str]] = set()
+        chosen: dict[tuple[str, frozenset[str]], VerifiedTableRow] = {}
+        ambiguous: set[tuple[str, frozenset[str]]] = set()
         for parent_id, body, metadata in self._documents(*group):
-            if str(metadata.get("item", "")).casefold() != "item 8":
+            if str(metadata.get("item", "")).casefold() not in {"item 7", "item 8"}:
                 continue
             for table_match in HTML_TABLE_RE.finditer(body):
                 heading_matches = list(HEADING_RE.finditer(body[: table_match.start()]))
@@ -299,31 +349,77 @@ class StructuredDocumentLookup:
                 if table is None:
                     continue
                 rows = table.find_all("tr")
-                year_columns = {
-                    index for tr in rows for index, cell in
-                    enumerate(tr.find_all("th", recursive=False))
-                    if cell.get_text(" ", strip=True) == group[1]
+                grid = self._table_grid(table)
+                year_columns: dict[str, set[int]] = {
+                    year: set() for year in requested_years
                 }
-                if len(year_columns) != 1:
+                for tr, values in zip(rows, grid):
+                    if tr.find("th") is None:
+                        continue
+                    for index, text in enumerate(values):
+                        for year in requested_years:
+                            if re.search(rf"(?<!\d){re.escape(year)}(?!\d)", text):
+                                year_columns[year].add(index)
+                resolved_columns = {
+                    year: next(iter(columns))
+                    for year, columns in year_columns.items()
+                    if len(columns) == 1
+                }
+                if not resolved_columns:
                     continue
-                column = next(iter(year_columns))
                 scale_match = re.search(
                     r"\b(?:millions?|billions?|thousands?)\b",
-                    body[heading.end(): table_match.start()], re.IGNORECASE,
+                    body[heading.end(): table_match.start()]
+                    + " "
+                    + table.get_text(" ", strip=True),
+                    re.IGNORECASE,
                 )
                 if scale_match is None:
                     continue
                 scale = scale_match.group().lower()
                 evidence = body[heading.start(): table_match.end()]
-                for tr in rows:
+                group_terms: set[str] = set()
+                group_label = ""
+                for tr, values in zip(rows, grid):
                     cells = tr.find_all(["td", "th"], recursive=False)
-                    if len(cells) <= column:
+                    if not cells:
+                        continue
+                    # Column headers can contain year-shaped numeric cells and a
+                    # unit label that overlaps words in the question. They define
+                    # table structure; they are never reported financial rows.
+                    if tr.find("td", recursive=False) is None:
                         continue
                     label = " ".join(cells[0].stripped_strings)
+                    nonempty = [
+                        " ".join(cell.stripped_strings)
+                        for cell in cells
+                        if " ".join(cell.stripped_strings)
+                    ]
+                    if (
+                        label
+                        and len(nonempty) == 1
+                        and (
+                            int(cells[0].get("colspan", "1") or "1") > 1
+                            or all(
+                                len(values) <= column or not values[column]
+                                for column in resolved_columns.values()
+                            )
+                        )
+                    ):
+                        group_label = label
+                        group_terms = self._terms(label)
+                        continue
                     terms = self._terms(label) - {"total"}
+                    if (
+                        group_terms & requested
+                        and "cost" in group_terms
+                        and "cost" not in requested
+                    ):
+                        continue
+                    contextual_terms = group_terms & requested
                     semantic_terms = {
                         term
-                        for term in terms
+                        for term in terms | contextual_terms
                         if term not in PERIOD_ROW_TERMS and not term.isdigit()
                     }
                     # Parser-produced period rows can look numeric (for example,
@@ -331,19 +427,35 @@ class StructuredDocumentLookup:
                     # financial facts. Only rows with a semantic label are eligible.
                     if not semantic_terms or not semantic_terms.issubset(requested):
                         continue
-                    value = " ".join(cells[column].stripped_strings)
-                    if not re.fullmatch(r"\$?\s*\(?-?\d[\d,]*(?:\.\d+)?\)?", value):
-                        continue
-                    key = frozenset(semantic_terms)
-                    source = self._source("S1", parent_id, metadata, evidence)
-                    source["full_evidence_text"] = evidence
-                    source["source_hash"] = metadata.get("source_hash")
-                    row = VerifiedTableRow(label, group[1], value, scale, source)
-                    previous = chosen.get(key)
-                    if previous and previous.value.replace("$", "") != value.replace("$", ""):
-                        ambiguous.add(key)
-                    elif previous is None:
-                        chosen[key] = row
+                    display_label = (
+                        f"{group_label} {label}"
+                        if contextual_terms - terms and group_label
+                        else label
+                    )
+                    for year, column in resolved_columns.items():
+                        if len(values) <= column:
+                            continue
+                        value = values[column]
+                        if not re.fullmatch(
+                            r"\$?\s*\(?-?\d[\d,]*(?:\.\d+)?\)?", value
+                        ):
+                            continue
+                        key = (year, frozenset(semantic_terms))
+                        source = self._source("S1", parent_id, metadata, evidence)
+                        source["full_evidence_text"] = evidence
+                        source["source_hash"] = metadata.get("source_hash")
+                        row = VerifiedTableRow(
+                            display_label, year, value, scale, source
+                        )
+                        previous = chosen.get(key)
+                        if (
+                            previous
+                            and previous.value.replace("$", "")
+                            != value.replace("$", "")
+                        ):
+                            ambiguous.add(key)
+                        elif previous is None:
+                            chosen[key] = row
         eligible = {
             key: row for key, row in chosen.items() if key not in ambiguous
         }
@@ -357,6 +469,12 @@ class StructuredDocumentLookup:
             broad: frozenset[str], specific: frozenset[str]
         ) -> bool:
             """Detect a broad metric mention separate from its specific variant."""
+            if re.search(
+                r"\b(?:combined|sum|total)\s+(?:amount\s+)?of\b",
+                question,
+                re.IGNORECASE,
+            ):
+                return False
             extras = specific - broad
             width = len(broad) + 2
             return any(
@@ -373,10 +491,12 @@ class StructuredDocumentLookup:
         # specific row unless the question names the broad metric separately.
         return tuple(
             row
-            for key, row in eligible.items()
+            for (year, key), row in eligible.items()
             if not any(
-                key < other and not separately_requested(key, other)
-                for other in eligible
+                year == other_year
+                and key < other
+                and not separately_requested(key, other)
+                for other_year, other in eligible
             )
         )
 

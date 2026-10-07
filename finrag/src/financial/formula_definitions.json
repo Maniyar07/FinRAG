@@ -1,0 +1,234 @@
+{
+  "metrics": {
+    "total_revenue": {
+      "label": "total revenue",
+      "search_instruction": "Find the exact consolidated total revenue table row, preserving period, currency, units, and scale."
+    },
+    "cost_of_revenue": {
+      "label": "cost of revenue",
+      "search_instruction": "Find the exact consolidated cost of revenue or cost of revenues table row, preserving period, currency, units, and scale."
+    },
+    "operating_income": {
+      "label": "operating income",
+      "search_instruction": "Find the exact consolidated operating income or income from operations table row, preserving period, currency, units, and scale."
+    },
+    "net_income": {
+      "label": "net income",
+      "search_instruction": "Find the exact consolidated net income table row, preserving period, currency, units, and scale."
+    },
+    "depreciation_and_amortization": {
+      "label": "depreciation and amortization",
+      "search_instruction": "Find the exact reported depreciation and amortization amount, preserving period, currency, units, and scale."
+    },
+    "operating_cash_flow": {
+      "label": "net cash provided by operating activities",
+      "search_instruction": "Find the exact net cash provided by operating activities table row, preserving period, currency, units, and scale."
+    },
+    "capital_expenditures": {
+      "label": "capital expenditures",
+      "search_instruction": "Find the exact purchases of property and equipment or capital expenditures cash outflow, preserving its reported sign, period, currency, units, and scale."
+    },
+    "current_assets": {
+      "label": "total current assets",
+      "search_instruction": "Find the exact total current assets balance-sheet row, preserving period, currency, units, and scale."
+    },
+    "current_liabilities": {
+      "label": "total current liabilities",
+      "search_instruction": "Find the exact total current liabilities balance-sheet row, preserving period, currency, units, and scale."
+    },
+    "cash_and_cash_equivalents": {
+      "label": "cash and cash equivalents",
+      "search_instruction": "Find the exact cash and cash equivalents balance-sheet row, excluding restricted cash unless the row explicitly combines it, and preserve period, currency, units, and scale."
+    },
+    "short_term_investments": {
+      "label": "short-term investments",
+      "search_instruction": "Find the exact short-term investments or current marketable securities balance-sheet row, preserving period, currency, units, and scale."
+    },
+    "accounts_receivable": {
+      "label": "accounts receivable, net",
+      "search_instruction": "Find the exact accounts receivable, net balance-sheet row, preserving period, currency, units, and scale."
+    },
+    "total_debt": {
+      "label": "total debt",
+      "search_instruction": "Find the exact reported total debt amount, or a clearly labeled current-plus-long-term debt total, preserving period, currency, units, and scale."
+    },
+    "stockholders_equity": {
+      "label": "total stockholders' equity",
+      "search_instruction": "Find the exact total stockholders' equity balance-sheet row, preserving period, currency, units, and scale."
+    },
+    "total_assets": {
+      "label": "total assets",
+      "search_instruction": "Find the exact total assets balance-sheet row, preserving period, currency, units, and scale."
+    },
+    "effective_tax_rate": {
+      "label": "effective tax rate",
+      "search_instruction": "Find the exact consolidated effective tax rate for the requested fiscal period and preserve the percent unit."
+    },
+    "diluted_weighted_average_shares": {
+      "label": "diluted weighted-average shares",
+      "search_instruction": "Find the exact diluted weighted-average shares used for diluted earnings per share, preserving period, units, and scale."
+    },
+    "diluted_eps": {
+      "label": "diluted earnings per share",
+      "search_instruction": "Find the exact diluted earnings per share table row, preserving period, currency, and per-share unit."
+    }
+  },
+  "formulas": [
+    {
+      "id": "gross_profit",
+      "name": "Gross profit",
+      "aliases": ["gross profit"],
+      "expression": {"operation": "difference", "inputs": [{"metric": "total_revenue"}, {"metric": "cost_of_revenue"}]}
+    },
+    {
+      "id": "gross_margin",
+      "name": "Gross margin",
+      "aliases": ["gross margin", "gross profit margin"],
+      "expression": {"operation": "ratio", "inputs": [{"operation": "difference", "inputs": [{"metric": "total_revenue"}, {"metric": "cost_of_revenue"}]}, {"metric": "total_revenue"}]}
+    },
+    {
+      "id": "operating_margin",
+      "name": "Operating margin",
+      "aliases": ["operating margin", "operating profit margin"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "operating_income"}, {"metric": "total_revenue"}]}
+    },
+    {
+      "id": "net_profit_margin",
+      "name": "Net profit margin",
+      "aliases": ["net profit margin", "net margin", "net income margin"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "net_income"}, {"metric": "total_revenue"}]}
+    },
+    {
+      "id": "ebitda",
+      "name": "EBITDA",
+      "aliases": ["ebitda"],
+      "expression": {"operation": "sum", "inputs": [{"metric": "operating_income"}, {"metric": "depreciation_and_amortization"}]},
+      "assumption": "Uses operating income plus depreciation and amortization; it does not infer unreported adjustments."
+    },
+    {
+      "id": "ebitda_margin",
+      "name": "EBITDA margin",
+      "aliases": ["ebitda margin"],
+      "expression": {"operation": "ratio", "inputs": [{"operation": "sum", "inputs": [{"metric": "operating_income"}, {"metric": "depreciation_and_amortization"}]}, {"metric": "total_revenue"}]}
+    },
+    {
+      "id": "free_cash_flow",
+      "name": "Free cash flow",
+      "aliases": ["free cash flow", "fcf"],
+      "expression": {"operation": "difference", "inputs": [{"metric": "operating_cash_flow"}, {"operation": "absolute_value", "inputs": [{"metric": "capital_expenditures"}]}]}
+    },
+    {
+      "id": "free_cash_flow_margin",
+      "name": "Free cash flow margin",
+      "aliases": ["free cash flow margin", "fcf margin"],
+      "expression": {"operation": "ratio", "inputs": [{"operation": "difference", "inputs": [{"metric": "operating_cash_flow"}, {"operation": "absolute_value", "inputs": [{"metric": "capital_expenditures"}]}]}, {"metric": "total_revenue"}]}
+    },
+    {
+      "id": "current_ratio",
+      "name": "Current ratio",
+      "aliases": ["current ratio"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "current_assets"}, {"metric": "current_liabilities"}]}
+    },
+    {
+      "id": "quick_ratio",
+      "name": "Quick ratio",
+      "aliases": ["quick ratio", "acid test ratio"],
+      "expression": {"operation": "ratio", "inputs": [{"operation": "sum", "inputs": [{"metric": "cash_and_cash_equivalents"}, {"metric": "short_term_investments"}, {"metric": "accounts_receivable"}]}, {"metric": "current_liabilities"}]}
+    },
+    {
+      "id": "cash_ratio",
+      "name": "Cash ratio",
+      "aliases": ["cash ratio"],
+      "expression": {"operation": "ratio", "inputs": [{"operation": "sum", "inputs": [{"metric": "cash_and_cash_equivalents"}, {"metric": "short_term_investments"}]}, {"metric": "current_liabilities"}]}
+    },
+    {
+      "id": "debt_to_equity",
+      "name": "Debt-to-equity ratio",
+      "aliases": ["debt to equity", "debt equity ratio", "debt-to-equity"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "total_debt"}, {"metric": "stockholders_equity"}]}
+    },
+    {
+      "id": "debt_to_assets",
+      "name": "Debt-to-assets ratio",
+      "aliases": ["debt to assets", "debt assets ratio", "debt-to-assets"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "total_debt"}, {"metric": "total_assets"}]}
+    },
+    {
+      "id": "net_debt",
+      "name": "Net debt",
+      "aliases": ["net debt"],
+      "expression": {"operation": "difference", "inputs": [{"metric": "total_debt"}, {"metric": "cash_and_cash_equivalents"}]}
+    },
+    {
+      "id": "return_on_assets",
+      "name": "Return on assets",
+      "aliases": ["return on assets", "roa"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "net_income"}, {"metric": "total_assets"}]},
+      "assumption": "Uses ending total assets because the selected filing scope supplies one balance-sheet period."
+    },
+    {
+      "id": "return_on_equity",
+      "name": "Return on equity",
+      "aliases": ["return on equity", "roe"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "net_income"}, {"metric": "stockholders_equity"}]},
+      "assumption": "Uses ending stockholders' equity because the selected filing scope supplies one balance-sheet period."
+    },
+    {
+      "id": "return_on_invested_capital",
+      "name": "Return on invested capital",
+      "aliases": ["return on invested capital", "roic"],
+      "expression": {"operation": "ratio", "inputs": [{"operation": "product", "inputs": [{"metric": "operating_income"}, {"operation": "percent_complement", "inputs": [{"metric": "effective_tax_rate"}]}]}, {"operation": "difference", "inputs": [{"operation": "sum", "inputs": [{"metric": "total_debt"}, {"metric": "stockholders_equity"}]}, {"metric": "cash_and_cash_equivalents"}]}]},
+      "assumption": "Uses NOPAT = operating income times one minus the effective tax rate, and invested capital = debt plus equity minus cash."
+    },
+    {
+      "id": "asset_turnover",
+      "name": "Asset turnover",
+      "aliases": ["asset turnover"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "total_revenue"}, {"metric": "total_assets"}]},
+      "assumption": "Uses ending total assets rather than average assets."
+    },
+    {
+      "id": "receivables_turnover",
+      "name": "Receivables turnover",
+      "aliases": ["receivables turnover", "accounts receivable turnover"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "total_revenue"}, {"metric": "accounts_receivable"}]},
+      "assumption": "Uses total revenue and ending net receivables when credit sales and average receivables are not separately available."
+    },
+    {
+      "id": "cash_flow_conversion",
+      "name": "Cash-flow conversion",
+      "aliases": ["cash flow conversion", "cash conversion ratio"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "operating_cash_flow"}, {"metric": "net_income"}]}
+    },
+    {
+      "id": "revenue_per_share",
+      "name": "Revenue per share",
+      "aliases": ["revenue per share", "sales per share"],
+      "expression": {"operation": "ratio", "inputs": [{"metric": "total_revenue"}, {"metric": "diluted_weighted_average_shares"}]}
+    },
+    {
+      "id": "revenue_growth",
+      "name": "Revenue growth",
+      "aliases": ["revenue growth", "sales growth"],
+      "mode": "temporal",
+      "metric": "total_revenue",
+      "operation": "percentage_change"
+    },
+    {
+      "id": "eps_growth",
+      "name": "Diluted EPS growth",
+      "aliases": ["eps growth", "earnings per share growth"],
+      "mode": "temporal",
+      "metric": "diluted_eps",
+      "operation": "percentage_change"
+    },
+    {
+      "id": "operating_cash_flow_growth",
+      "name": "Operating cash-flow growth",
+      "aliases": ["operating cash flow growth", "cash flow growth"],
+      "mode": "temporal",
+      "metric": "operating_cash_flow",
+      "operation": "percentage_change"
+    }
+  ]
+}

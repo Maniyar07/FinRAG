@@ -64,7 +64,7 @@ SEC_FORM_RE = re.compile(
     re.IGNORECASE,
 )
 TRANSCRIPT_RE = re.compile(
-    r"\b(transcripts?|earnings calls?|conference calls?|prepared remarks?|q\s*&\s*a|"
+    r"\b(transcripts?|earnings[- ]calls?|conference[- ]calls?|prepared remarks?|q\s*&\s*a|"
     r"questions?\s+(?:and|&)\s+answers?|speaker|who said|management said)\b",
     re.IGNORECASE,
 )
@@ -214,11 +214,14 @@ def _document_years(text: str) -> tuple[str, ...]:
     year = r"(?P<year>(?:19|20)\d{2})"
     document = (
         r"(?:form\s+)?\d{1,2}\s*-\s*[a-z](?:s|'s)?|annual reports?|sec filings?|"
-        r"earnings transcripts?|earnings calls?|conference calls?|transcripts?"
+        r"earnings transcripts?|earnings[- ]calls?|conference[- ]calls?|transcripts?"
     )
     patterns = (
         re.compile(rf"\b{year}\s+(?:{document})\b", re.IGNORECASE),
-        re.compile(rf"\bq[1-4]\s+{year}\s+(?:{document})\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?:fiscal\s+)?q[1-4]\s+{year}\s+(?:{document})\b",
+            re.IGNORECASE,
+        ),
         re.compile(
             rf"\b(?:{document})\s+(?:for\s+|of\s+|in\s+)?(?:fy\s*)?{year}\b",
             re.IGNORECASE,
@@ -227,6 +230,17 @@ def _document_years(text: str) -> tuple[str, ...]:
     matches: list[tuple[int, str]] = []
     for pattern in patterns:
         matches.extend((match.start(), match.group("year")) for match in pattern.finditer(text))
+    coordinated_years = re.compile(
+        rf"(?P<years>(?:fiscal\s+)?(?:19|20)\d{{2}}"
+        rf"(?:\s*(?:,|and|or)\s*(?:fiscal\s+)?(?:19|20)\d{{2}})+)"
+        rf"\s+(?:{document})\b",
+        re.IGNORECASE,
+    )
+    for match in coordinated_years.finditer(text):
+        matches.extend(
+            (match.start() + year_match.start(), year_match.group())
+            for year_match in re.finditer(r"\b(?:19|20)\d{2}\b", match.group("years"))
+        )
     return tuple(dict.fromkeys(value for _, value in sorted(matches)))
 
 

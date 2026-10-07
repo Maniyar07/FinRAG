@@ -462,6 +462,15 @@ Multi-hop orchestration is disabled by default so an existing deployment keeps i
 current latency and model-call profile. Enable it after running the test suite and a
 representative evaluation against the active index:
 
+Financial formulas are defined declaratively in
+`src/financial/formula_definitions.json`. The generic compiler turns a matched
+formula expression into scope-bound numeric evidence requirements and an ordered
+calculation graph. The initial catalog covers margins, cash flow, liquidity,
+leverage, returns, efficiency, per-share metrics, and common growth calculations.
+New formulas normally require only a catalog entry composed from approved calculator
+operations; they do not require a new query-routing branch. Every expression leaf is
+still bound to a validated fact from the selected 10-K before arithmetic runs.
+
 ```dotenv
 FINRAG_MULTIHOP_ENABLED=true
 FINRAG_AGENT_BACKEND=langchain

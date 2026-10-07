@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from src.financial.calculator import CalculationRequest, CalculationResult
@@ -32,6 +33,10 @@ class CalculationRun:
 def calculation_as_fact(calculation: ExecutedCalculation) -> ValidatedFinancialFact:
     """Convert a verified result into a provenance-preserving calculator operand."""
     result = calculation.result
+    label = calculation.label.strip()
+    ticker_match = re.match(r"^([A-Z][A-Z0-9.-]{1,9})\s+(.+)$", label)
+    ticker = ticker_match.group(1) if ticker_match else "CALC"
+    metric = ticker_match.group(2) if ticker_match else label
     value_type = {
         "currency": ValueType.CURRENCY,
         "percent": ValueType.PERCENT,
@@ -42,10 +47,10 @@ def calculation_as_fact(calculation: ExecutedCalculation) -> ValidatedFinancialF
     scale = result.scale if value_type == ValueType.CURRENCY else None
     return ValidatedFinancialFact(
         fact_id=calculation.calculation_id,
-        ticker="CALC",
-        metric=calculation.label,
+        ticker=ticker,
+        metric=metric,
         period="calculated",
-        raw_value=str(result.result),
+        raw_value=f"{result.result:,}",
         numeric_value=result.result,
         base_value=result.result * SCALE_MULTIPLIERS.get(scale or "ones"),
         value_type=value_type,
@@ -54,8 +59,8 @@ def calculation_as_fact(calculation: ExecutedCalculation) -> ValidatedFinancialF
         currency=result.currency,
         scale=scale,
         source_id=next(iter(result.source_ids), "S0"),
-        evidence_excerpt=f"Application-verified calculation: {calculation.label}",
-        row_label=calculation.label,
+        evidence_excerpt=f"Application-verified calculation: {label}",
+        row_label=metric,
         column_label="calculated",
         validation_checks=("application_verified_calculation",),
     )

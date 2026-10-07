@@ -4,6 +4,7 @@
 **/__pycache__/
 **/*.py[cod]
 **/.pytest_cache/
+finrag/.test-temp/
 finrag/.streamlit/
 finrag/artifacts/
 finrag/data/indexes/
@@ -11,3 +12,8 @@ finrag/Data/indexes/
 finrag/data/logs/
 finrag/Data/logs/
 finrag/evals/results/
+finrag/evals/gold_builder/work/
+# Generated fine-tuning bundles
+/finrag/*.zip
+# Generated fine-tuning archives
+/finrag/*.zip

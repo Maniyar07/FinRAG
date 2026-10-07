@@ -1,0 +1,34 @@
+{
+  "minimum_train_examples": 500,
+  "maximum_single_query_type_fraction": 0.40,
+  "required_groups": {
+    "numeric_and_table_grounding": {
+      "query_types": ["direct_extraction", "targeted_table", "complete_table"],
+      "minimum": 150
+    },
+    "quantitative_reasoning": {
+      "query_types": ["year_over_year", "comparison", "calculation"],
+      "minimum": 110
+    },
+    "verified_calculation": {
+      "query_types": ["calculation"],
+      "minimum": 15
+    },
+    "filing_narrative": {
+      "query_types": ["narrative"],
+      "minimum": 60
+    },
+    "transcript_behavior": {
+      "query_types": ["transcript_reported", "transcript_explanation", "guidance"],
+      "minimum": 35
+    },
+    "multi_source_synthesis": {
+      "query_types": ["comparison", "cross_document_synthesis"],
+      "minimum": 35
+    },
+    "evidence_safety": {
+      "query_types": ["insufficient_evidence"],
+      "minimum": 15
+    }
+  }
+}

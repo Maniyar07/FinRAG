@@ -76,6 +76,17 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(result.reference_years, ("2023",))
         self.assertEqual(result.unsupported_years, ())
 
+    def test_hyphenated_earnings_call_keeps_guidance_year_as_reference(self) -> None:
+        result = understand_query(
+            "According to Microsoft's fiscal Q4 2025 earnings-call transcript, "
+            "what Cloud margin did management expect for fiscal Q1 2026?"
+        )
+
+        self.assertEqual(result.years, ("2025",))
+        self.assertEqual(result.reference_years, ("2026",))
+        self.assertEqual(result.unsupported_years, ())
+        self.assertEqual(result.doc_type, "TRANSCRIPT")
+
     def test_unsupported_filing_year_is_still_rejected(self) -> None:
         result = understand_query("Compare the TSLA 2023 10-K with its 2024 10-K.")
         self.assertEqual(result.unsupported_years, ("2023",))

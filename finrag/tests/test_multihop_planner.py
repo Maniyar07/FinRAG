@@ -30,6 +30,40 @@ def requirement(*, ticker="MSFT", year="2024", document_type="10K") -> dict:
 
 
 class MultiHopPlannerTests(unittest.TestCase):
+    def test_reported_change_with_drivers_uses_narrative_evidence_plan(self) -> None:
+        chain = FakeChain({})
+        planner = MultiHopPlanner(chain=chain)
+
+        plan = planner.plan(
+            question=(
+                "According to Tesla's 2025 10-K, by how much did SG&A expense "
+                "increase, and what factors drove the change?"
+            ),
+            permitted_scope=Scope(("TSLA",), ("2025",), "10K"),
+        )
+
+        self.assertEqual(chain.calls, [])
+        self.assertEqual(len(plan.requirements), 1)
+        self.assertEqual(plan.requirements[0].evidence_type.value, "narrative")
+        self.assertEqual(plan.calculations, ())
+
+    def test_single_year_cross_company_difference_splits_searches_by_group(self) -> None:
+        chain = FakeChain({})
+        planner = MultiHopPlanner(chain=chain)
+
+        plan = planner.plan(
+            question=(
+                "Compare Microsoft and Tesla net income for fiscal 2025 according "
+                "to their 2025 10-K filings. State both values and the difference."
+            ),
+            permitted_scope=Scope(("MSFT", "TSLA"), ("2025",), "10K"),
+        )
+
+        self.assertEqual(chain.calls, [])
+        self.assertEqual(len(plan.requirements), 2)
+        self.assertTrue(all(len(item.groups) == 1 for item in plan.requirements))
+        self.assertEqual(plan.calculations[0].operation.value, "difference")
+
     def test_staged_sum_ratio_builds_explicit_intermediate_dependency(self) -> None:
         chain = FakeChain({})
         planner = MultiHopPlanner(chain=chain)

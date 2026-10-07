@@ -199,9 +199,23 @@ class LangChainReActAgent:
         recovered_calculations = session.complete_pending_calculations()
         execution = session.execution()
         recovered_agent_error = None
+        deterministic_recovery = False
         if agent_error is not None and recovered_calculations and execution.complete:
             recovered_agent_error = agent_error
             agent_error = None
+        if checklist is not None and (agent_error is not None or not execution.complete):
+            try:
+                recovered_execution = self.executor.execute(
+                    checklist,
+                    permitted_scope=scope,
+                )
+            except Exception:
+                recovered_execution = None
+            if recovered_execution is not None and recovered_execution.complete:
+                recovered_agent_error = agent_error
+                agent_error = None
+                execution = recovered_execution
+                deterministic_recovery = True
         bundle = execution.bundle
         trace["agent"].update(
             {
@@ -213,6 +227,9 @@ class LangChainReActAgent:
                 "actions_used": session.action_count,
                 "events": list(session.events),
                 "stop_reason": (
+                    "deterministic_checklist_recovery"
+                    if deterministic_recovery
+                    else
                     "typed_checklist_recovered"
                     if recovered_agent_error is not None
                     else
@@ -221,6 +238,7 @@ class LangChainReActAgent:
                     else "insufficient_evidence"
                 ),
                 "recovered_calculations": recovered_calculations,
+                "deterministic_recovery": deterministic_recovery,
             }
         )
         if recovered_agent_error is not None:
@@ -274,9 +292,9 @@ class LangChainReActAgent:
             return result
 
         numeric_text = verified_calculation_text(execution, question)
-        has_narrative = any(
+        has_narrative = bool(checklist) and any(
             requirement.evidence_type == EvidenceType.NARRATIVE
-            for requirement in session.requirements
+            for requirement in checklist.requirements
         )
         if numeric_text is not None and not has_narrative:
             answer = expand_citations(numeric_text, bundle.sources)

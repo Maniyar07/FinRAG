@@ -7,6 +7,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -24,6 +25,7 @@ from backend.models import (
     ErrorResponse,
     HealthResponse,
     PendingClarificationPayload,
+    RequestMetricsView,
     ScopePayload,
     ScopeView,
     SourceView,
@@ -32,6 +34,7 @@ from backend.service_manager import ServiceFactory, ServiceManager
 from src.app.chat_service import ChatService
 from src.retrieval.clarification_policy import merge_clarification_reply
 from src.schemas import ChatResult, PendingClarification, Scope
+from src.telemetry import RequestMetrics, collect_usage
 
 
 LOGGER = logging.getLogger(__name__)
@@ -651,6 +654,7 @@ def _sanitize_trace(trace: object) -> dict[str, Any]:
 def _chat_response(
     result: ChatResult,
     *,
+    metrics: RequestMetrics,
     request: Request,
     include_trace: bool,
     allow_traces: bool,
@@ -679,9 +683,42 @@ def _chat_response(
         scope=_scope_view(result.scope),
         inherited_fields=[str(item) for item in result.inherited_fields],
         sources=sources,
+        metrics=RequestMetricsView(
+            latency_ms=metrics.latency_ms,
+            llm_calls=metrics.llm_calls,
+            input_tokens=metrics.input_tokens,
+            cached_input_tokens=metrics.cached_input_tokens,
+            output_tokens=metrics.output_tokens,
+            total_tokens=metrics.total_tokens,
+            estimated_cost_usd=metrics.estimated_cost_usd,
+            models=[str(model)[:120] for model in metrics.models[:8]],
+        ),
         pending_clarification=_pending_view(result.pending_clarification),
         trace=_sanitize_trace(result_trace) if include_trace and allow_traces else None,
     )
+
+
+async def _measured_ask(
+    service: Any,
+    question: str,
+    *,
+    ui_scope: Scope,
+    previous_scope: Scope,
+    history: list[dict],
+    pending_clarification: PendingClarification | None,
+) -> tuple[ChatResult, RequestMetrics]:
+    with collect_usage() as usage:
+        started = perf_counter()
+        result = await asyncio.to_thread(
+            service.ask,
+            question,
+            ui_scope=ui_scope,
+            previous_scope=previous_scope,
+            history=history,
+            pending_clarification=pending_clarification,
+        )
+        latency_ms = (perf_counter() - started) * 1000
+    return result, usage.snapshot(latency_ms=latency_ms)
 
 
 def _sse(event: str, data: dict[str, Any], *, event_id: int | None = None) -> str:
@@ -841,8 +878,8 @@ def create_app(
         service_manager = _manager(request)
         service = _service_for_request(service_manager, payload)
         ui_scope, previous_scope, history, pending = _prepare_call(service, payload)
-        result = await asyncio.to_thread(
-            service.ask,
+        result, metrics = await _measured_ask(
+            service,
             payload.question,
             ui_scope=ui_scope,
             previous_scope=previous_scope,
@@ -851,6 +888,7 @@ def create_app(
         )
         return _chat_response(
             result,
+            metrics=metrics,
             request=request,
             include_trace=payload.include_trace,
             allow_traces=service_manager.allow_traces,
@@ -867,7 +905,7 @@ def create_app(
         ui_scope, previous_scope, history, pending = _prepare_call(service, payload)
 
         async def events():
-            ask_task: asyncio.Task[ChatResult] | None = None
+            ask_task: asyncio.Task[tuple[ChatResult, RequestMetrics]] | None = None
             try:
                 if await request.is_disconnected():
                     return
@@ -890,8 +928,8 @@ def create_app(
                     event_id=2,
                 )
                 ask_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        service.ask,
+                    _measured_ask(
+                        service,
                         payload.question,
                         ui_scope=ui_scope,
                         previous_scope=previous_scope,
@@ -909,7 +947,7 @@ def create_app(
                     if not done:
                         yield ": heartbeat\n\n"
 
-                result = await ask_task
+                result, metrics = await ask_task
                 if await request.is_disconnected():
                     return
                 yield _sse(
@@ -922,6 +960,7 @@ def create_app(
                 )
                 response = _chat_response(
                     result,
+                    metrics=metrics,
                     request=request,
                     include_trace=payload.include_trace,
                     allow_traces=service_manager.allow_traces,

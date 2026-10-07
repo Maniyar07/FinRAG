@@ -14,6 +14,31 @@ const emptyScope = () => ({
   required_doc_types: [],
 });
 
+function cleanMetrics(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const number = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  const integer = (value) => Math.floor(number(value));
+  const inputTokens = integer(candidate.input_tokens);
+  const outputTokens = integer(candidate.output_tokens);
+  const rawCost = candidate.estimated_cost_usd;
+  const parsedCost = rawCost === null || rawCost === undefined ? null : Number(rawCost);
+  return {
+    latency_ms: number(candidate.latency_ms),
+    llm_calls: integer(candidate.llm_calls),
+    input_tokens: inputTokens,
+    cached_input_tokens: Math.min(inputTokens, integer(candidate.cached_input_tokens)),
+    output_tokens: outputTokens,
+    total_tokens: Math.max(inputTokens + outputTokens, integer(candidate.total_tokens)),
+    estimated_cost_usd: Number.isFinite(parsedCost) && parsedCost >= 0 ? parsedCost : null,
+    models: Array.isArray(candidate.models)
+      ? candidate.models.map((model) => String(model).slice(0, 120)).slice(0, 8)
+      : [],
+  };
+}
+
 function cleanPendingClarification(candidate) {
   if (!candidate || typeof candidate !== "object" || !candidate.scope) return null;
   const originalQuestion = String(candidate.original_question || "").trim().slice(0, 4000);
@@ -151,6 +176,7 @@ function cleanStoredChat(candidate) {
       decision: message.decision ? String(message.decision) : undefined,
       sources: Array.isArray(message.sources) ? message.sources.slice(0, 12) : [],
       trace: message.trace && typeof message.trace === "object" ? message.trace : null,
+      metrics: cleanMetrics(message.metrics),
       inherited_fields: Array.isArray(message.inherited_fields) ? message.inherited_fields : [],
     }));
   const filters = candidate.filters && typeof candidate.filters === "object"
@@ -612,6 +638,45 @@ function createCitationChip(sourceId, sources) {
   return citation;
 }
 
+function formatLatency(milliseconds) {
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`;
+  const seconds = milliseconds / 1_000;
+  return `${seconds.toFixed(seconds < 10 ? 2 : 1)} s`;
+}
+
+function formatEstimatedCost(value) {
+  if (value === null) return "Cost unavailable";
+  const digits = value >= 0.01 ? 4 : 6;
+  return `~$${value.toFixed(digits)}`;
+}
+
+function renderMetrics(metrics) {
+  const container = document.createElement("div");
+  container.className = "response-metrics";
+  container.setAttribute("aria-label", "Response performance and estimated LLM usage");
+
+  const latency = document.createElement("span");
+  latency.textContent = formatLatency(metrics.latency_ms);
+
+  const tokens = document.createElement("span");
+  tokens.textContent = `${metrics.total_tokens.toLocaleString()} LLM tokens`;
+  tokens.title = [
+    `${metrics.input_tokens.toLocaleString()} input`,
+    `${metrics.cached_input_tokens.toLocaleString()} cached input`,
+    `${metrics.output_tokens.toLocaleString()} output`,
+    `${metrics.llm_calls.toLocaleString()} model call${metrics.llm_calls === 1 ? "" : "s"}`,
+  ].join(" · ");
+
+  const cost = document.createElement("span");
+  cost.textContent = formatEstimatedCost(metrics.estimated_cost_usd);
+  cost.title = metrics.estimated_cost_usd === null
+    ? "No configured price matches every model used by this response."
+    : "Estimated from reported LLM tokens; provider billing is authoritative.";
+
+  container.append(latency, tokens, cost);
+  return container;
+}
+
 function renderMessage(message) {
   const article = document.createElement("article");
   article.className = `message ${message.role}`;
@@ -645,6 +710,8 @@ function renderMessage(message) {
     || String(message.decision || "Response").replaceAll("_", " ");
   heading.append(label, decision);
   article.append(heading);
+
+  if (message.metrics) article.append(renderMetrics(message.metrics));
 
   if (message.inherited_fields?.length) {
     const note = document.createElement("p");
@@ -1129,6 +1196,7 @@ async function submitQuestion(question, { retry = false } = {}) {
       decision: String(result.decision || "response"),
       sources: Array.isArray(result.sources) ? result.sources : [],
       trace: result.trace || null,
+      metrics: cleanMetrics(result.metrics),
       inherited_fields: Array.isArray(result.inherited_fields) ? result.inherited_fields : [],
     });
     targetChat.pending_clarification = cleanPendingClarification(result.pending_clarification);
