@@ -9,12 +9,14 @@ from src.config import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, IndexPaths, runtim
 from src.constants import CHUNK_SCHEMA_VERSION, METADATA_SCHEMA_VERSION
 from src.ingestion.document_processing import file_hash, package_version
 from src.ingestion.source_inventory import CorpusInventory
+from src.observability import trace_component
 
 
 class ManifestError(RuntimeError):
     """Raised when an index manifest is missing or incompatible."""
 
 
+@trace_component("finrag.ingestion.manifest_build")
 def build_manifest(
     *, index_paths: IndexPaths, inventory: CorpusInventory, counts: dict[str, int]
 ) -> dict:
@@ -46,6 +48,7 @@ def build_manifest(
     }
 
 
+@trace_component("finrag.ingestion.manifest_write")
 def write_manifest(path: Path, manifest: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")

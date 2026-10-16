@@ -14,12 +14,15 @@ from src.config import (
     LEXICAL_CANDIDATE_K,
     MAX_CONTEXT_CHARS,
     MAX_CONTEXT_PARENTS,
+    MAX_CONTEXT_TOKENS,
     MIN_DENSE_SCORE,
     MIN_LEXICAL_COVERAGE,
 )
 from src.retrieval.context_builder import ContextBuilder
 from src.retrieval.lexical_index import LexicalHit, LexicalIndex
+from src.observability import trace_component
 from src.schemas import RankedChild, RetrievalBundle, Scope
+from dataclasses import replace
 
 
 GroupKey: TypeAlias = tuple[str, str, str | None]
@@ -83,6 +86,7 @@ class HybridRetriever:
         """Divide the candidate budget fairly across requested groups."""
         return max(1, ceil(total_limit / max(group_count, 1)))
 
+    @trace_component("finrag.retrieval.dense_search", run_type="retriever")
     def _dense_search(self, query: str, scope: Scope) -> list[DenseResult]:
         """Run a separate filtered dense search for every requested group."""
         groups = scope.retrieval_groups
@@ -101,6 +105,7 @@ class HybridRetriever:
                 results.append((group, rank, document, float(score)))
         return results
 
+    @trace_component("finrag.retrieval.lexical_search", run_type="retriever")
     def _lexical_search(
         self, query: str, scope: Scope, *, total_limit: int | None = None
     ) -> list[LexicalResult]:
@@ -123,6 +128,7 @@ class HybridRetriever:
                 results.append((group, rank, hit))
         return results
 
+    @trace_component("finrag.retrieval.rank_fusion", run_type="retriever")
     def _fuse(
         self,
         query: str,
@@ -257,6 +263,7 @@ class HybridRetriever:
         accepted.sort(key=sort_key)
         return accepted
 
+    @trace_component("finrag.hybrid_retrieval", run_type="retriever")
     def retrieve(
         self,
         query: str,
@@ -264,6 +271,12 @@ class HybridRetriever:
         *,
         query_expansions: tuple[str, ...] = (),
         preserve_all: bool = False,
+        max_parents: int | None = None,
+        max_chars: int | None = None,
+        max_tokens: int | None = None,
+        exclude_parent_ids: frozenset[str] = frozenset(),
+        preferred_parent_ids: tuple[str, ...] = (),
+        requirement_queries: tuple[str, ...] = (),
     ) -> RetrievalBundle:
         ranked = self._fuse(
             query,
@@ -274,16 +287,51 @@ class HybridRetriever:
         )
         if self.reranker is not None:
             ranked = self.reranker.rerank(query, ranked, scope)
-        parent_limit = (
+        # A combined query can bury one independently requested observation.
+        # Cheap scoped lexical searches reserve priority for each plan subject;
+        # parent loading, deduplication and the request budget remain shared.
+        subject_parents = []
+        for subject in dict.fromkeys(requirement_queries):
+            hits = self._lexical_search(subject, scope)
+            subject_parents.extend(next((str(hit.record.get("metadata", {}).get("parent_id", ""))
+                                         for hit_group, _, hit in hits
+                                         if hit_group == group and hit.coverage >= MIN_LEXICAL_COVERAGE), "")
+                                   for group in scope.retrieval_groups)
+        preferred_parent_ids = tuple(dict.fromkeys((*preferred_parent_ids, *(value for value in subject_parents if value))))
+        # Planned evidence matches prioritize their intact parent, never a sliced row.
+        priority = max((child.fused_score for child in ranked), default=0) + 1
+        preferred = set(preferred_parent_ids) - exclude_parent_ids
+        priorities = {parent_id: priority + len(preferred_parent_ids) - index
+                      for index, parent_id in enumerate(preferred_parent_ids)}
+        present = {child.parent_id for child in ranked}
+        ranked = [replace(child, fused_score=priorities[child.parent_id],
+                          metadata={**child.metadata, "retrieval_priority": "planned_evidence_match"})
+                  if child.parent_id in preferred else child for child in ranked]
+        missing = sorted(preferred - present)
+        if missing:
+            for parent_id, parent in zip(missing, self.context_builder.parent_store.get_many(missing)):
+                if parent is not None and any(
+                        (parent.metadata.get("ticker"), str(parent.metadata.get("fiscal_year")),
+                         str(parent.metadata.get("doc_type", "")).upper().replace("-", ""))
+                        == group for group in scope.retrieval_groups):
+                    ranked.append(RankedChild("indexed:" + parent_id, parent_id, parent.page_content,
+                        {**parent.metadata, "retrieval_priority": "planned_evidence_match"}, fused_score=priorities[parent_id]))
+        parent_limit = max_parents if max_parents is not None else (
             MAX_CONTEXT_PARENTS
             if not scope.is_comparison
             else max(MAX_CONTEXT_PARENTS, len(scope.retrieval_groups) * 2)
         )
+        char_limit = max_chars if max_chars is not None else MAX_CONTEXT_CHARS
+        token_limit = max_tokens if max_tokens is not None else MAX_CONTEXT_TOKENS
+        if parent_limit <= 0 or char_limit <= 0 or token_limit <= 0:
+            raise ValueError("Retrieval context limits must be positive.")
         return self.context_builder.build(
             ranked,
             scope,
             max_parents=parent_limit,
-            max_chars=MAX_CONTEXT_CHARS,
+            max_chars=char_limit,
+            max_tokens=token_limit,
             query=query,
             preserve_all=preserve_all,
+            exclude_parent_ids=exclude_parent_ids,
         )

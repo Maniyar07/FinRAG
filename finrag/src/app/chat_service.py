@@ -3,29 +3,28 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import replace
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
-from src.generation.answer_generator import AnswerGenerator
-from src.generation.citations import expand_citations
-from src.generation.narrative_quotes import NarrativeQuoteSelector
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from src.agent.graph import create_finrag_agent
+from src.financial.calculator import FinancialCalculator
+from src.generation.llm_engine import get_llm_engine
 from src.generation.answer_guardrails import (
     INSUFFICIENT_EVIDENCE_RESPONSE,
     UNVERIFIABLE_RESPONSE,
-    missing_comparison_groups,
-    scope_coverage_message,
+    validate_answer_payload,
 )
+from src.generation.citations import strip_citations
 from src.ingestion.manifest import available_keys, load_manifest
-from src.config import AGENT_BACKEND, LOGS_DIR, MULTIHOP_ENABLED, get_index_paths
-from src.app.langchain_react_agent import LangChainReActAgent
-from src.app.multihop_coordinator import BoundedReActAgent
-from src.app.response_composer import (
-    requires_verified_statement_values,
-    verified_statement_answer_text,
+from src.config import (
+    AGENT_MAX_ACTIONS,
+    LOGS_DIR,
+    get_index_paths,
 )
-from src.orchestration.executor import MultiHopExecutor
-from src.orchestration.planner import MultiHopPlanner, should_use_multihop
+from src.observability import annotate_current_trace, trace_component
 from src.retrieval.context_builder import ContextBuilder
 from src.retrieval.clarification_policy import (
     merge_clarification_reply,
@@ -41,25 +40,31 @@ from src.retrieval.semantic_query_parser import (
     should_use_semantic_fallback,
 )
 from src.retrieval.scope_policy import resolve_scope
-from src.retrieval.structured_lookup import StructuredDocumentLookup, VerifiedTableRow
 from src.retrieval.vector_store import FinancialVectorStore
+from src.runtime_errors import classify_runtime_error
+from src.request_runtime import RequestAborted, check_request
 from src.schemas import (
     ChatResult,
     Decision,
     PendingClarification,
     Scope,
     ScopeResolution,
-    RetrievalBundle,
 )
 from src.retrieval.reranker import build_cohere_reranker_from_environment
-from src.tools.document_search import DocumentSearchRequest, DocumentSearchTool
 
 
 class ChatService:
-    """Coordinate policy, retrieval, evidence checks, and answer generation."""
+    """Resolve request scope and invoke the LangGraph financial agent."""
 
-    def __init__(self, *, index_version: str | None = None):
+    def __init__(
+        self,
+        *,
+        index_version: str | None = None,
+        agent_graph: Any | None = None,
+    ):
         paths = get_index_paths(index_version)
+        self.require_validated_answer = agent_graph is None
+        self.index_version = paths.version
         self.manifest = load_manifest(paths)
         self.available_keys = available_keys(self.manifest)
         self.vector_manager = FinancialVectorStore(index_version=paths.version)
@@ -97,28 +102,35 @@ class ChatService:
                 context_builder=ContextBuilder(paths.parent_docstore_dir),
                 reranker=reranker,
             )
-            self.structured_lookup = StructuredDocumentLookup(paths.parent_docstore_dir)
-            self.document_search_tool = DocumentSearchTool(self.retriever)
-            self.generator = AnswerGenerator()
-            self.semantic_parser = build_semantic_query_parser_from_environment()
-            self.multihop_enabled = MULTIHOP_ENABLED
-            self.agent_backend = AGENT_BACKEND
-            self.multihop_planner = (
-                MultiHopPlanner()
-                if self.multihop_enabled
-                else None
-            )
-            self.multihop_executor = (
-                MultiHopExecutor(
-                    document_search=self.document_search_tool,
-                    statement_lookup=self.structured_lookup,
+            permitted_groups = tuple(
+                sorted(
+                    {
+                        (str(ticker), str(year))
+                        for ticker, year, _ in self.available_keys
+                    }
                 )
-                if self.multihop_enabled
+            )
+            permitted_doc_types = tuple(
+                sorted({str(doc_type).upper() for _, _, doc_type in self.available_keys})
+            )
+            permitted_scope = (
+                Scope(
+                    requested_groups=permitted_groups,
+                    required_doc_types=permitted_doc_types,
+                )
+                if permitted_groups
                 else None
             )
-            self.narrative_quote_selector = (
-                NarrativeQuoteSelector() if self.multihop_enabled else None
+            self.agent_graph = (
+                agent_graph
+                if agent_graph is not None
+                else create_finrag_agent(
+                    self.retriever,
+                    FinancialCalculator(),
+                    permitted_scope=permitted_scope,
+                )
             )
+            self.semantic_parser = build_semantic_query_parser_from_environment()
             self.logger = self._build_logger()
         except Exception:
             self.vector_manager.close()
@@ -148,18 +160,14 @@ class ChatService:
             "years": list(scope.years),
             "doc_type": scope.doc_type,
             "required_doc_types": list(scope.required_doc_types),
-            "requested_groups": [list(group) for group in scope.requested_groups],
+            "requested_groups": [list(group) for group in scope.groups],
         }
 
     def _record(self, trace: dict) -> None:
         self.logger.info(json.dumps(trace, ensure_ascii=True, sort_keys=True))
 
     def _company_confirmation_message(self) -> str:
-        tickers = tuple(
-            ticker
-            for ticker in ("JPM", "MSFT", "TSLA")
-            if any(key[0] == ticker for key in self.available_keys)
-        )
+        tickers = tuple(sorted({str(key[0]) for key in self.available_keys}))
         labels = ", ".join(tickers) or "the companies in the selected index"
         return (
             "Please confirm every company in the comparison. The selected index "
@@ -183,133 +191,872 @@ class ChatService:
         }
 
     @staticmethod
-    def _retrieval_source_trace(source: dict) -> dict:
-        """Return scores and source identity without duplicating evidence text."""
+    def _message_value(message: Any, key: str, default: Any = None) -> Any:
+        if isinstance(message, dict):
+            return message.get(key, default)
+        return getattr(message, key, default)
+
+    @classmethod
+    def _message_kind(cls, message: Any) -> str | None:
+        kind = cls._message_value(message, "type")
+        if kind is None:
+            kind = cls._message_value(message, "role")
+        return str(kind).casefold() if kind is not None else None
+
+    @classmethod
+    def _message_text(cls, message: Any) -> str:
+        content = cls._message_value(message, "content", "")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            chunks = []
+            for item in content:
+                if isinstance(item, str):
+                    chunks.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    chunks.append(item["text"])
+                else:
+                    text = getattr(item, "text", None)
+                    if isinstance(text, str):
+                        chunks.append(text)
+            return "\n".join(chunk for chunk in chunks if chunk).strip()
+        return str(content or "").strip()
+
+    @classmethod
+    def _agent_sources(cls, messages: list[Any]) -> list[dict]:
+        """Collect the evidence payloads returned by graph search tools."""
+        sources: list[dict] = []
+        seen: dict[tuple[str, str, str, str, str], dict] = {}
+        for message in messages:
+            if cls._message_kind(message) != "tool":
+                continue
+            try:
+                payload = json.loads(cls._message_text(message))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or not isinstance(payload.get("sources"), list):
+                continue
+            evidence_by_id: dict[str, str] = {}
+            context = payload.get("context")
+            if isinstance(context, str):
+                blocks = re.split(r"(?=^\[SOURCE\s+S\d+\s*\|)", context, flags=re.MULTILINE)
+                for block in blocks:
+                    header = re.match(r"^\[SOURCE\s+(S\d+)\s*\|[^\]]*\]\s*\n?", block)
+                    if header:
+                        evidence_by_id[header.group(1)] = block[header.end():].strip()
+            for source in payload["sources"]:
+                if not isinstance(source, dict):
+                    continue
+                item = dict(source)
+                item.setdefault("ticker", payload.get("ticker"))
+                item.setdefault(
+                    "fiscal_year", payload.get("filing_year", payload.get("year"))
+                )
+                item.setdefault("doc_type", payload.get("doc_type"))
+                item.setdefault(
+                    "evidence_text",
+                    evidence_by_id.get(str(item.get("id") or ""), ""),
+                )
+                identity = (
+                    str(item.get("ticker") or ""),
+                    str(item.get("fiscal_year") or ""),
+                    str(item.get("doc_type") or ""),
+                    str(item.get("id") or ""),
+                    str(item.get("parent_id") or item.get("id") or ""),
+                )
+                if identity in seen:
+                    previous = seen[identity]
+                    old, new = str(previous.get("evidence_text") or ""), str(item.get("evidence_text") or "")
+                    if old in new:
+                        previous["evidence_text"] = new
+                    elif new and new not in old:
+                        previous["evidence_text"] = old + "\n\n" + new
+                    continue
+                seen[identity] = item
+                sources.append(item)
+        return sources
+
+    @classmethod
+    def _agent_tool_diagnostics(cls, messages: list[Any]) -> dict[str, Any]:
+        """Capture compact tool inputs and outputs without duplicating filing text."""
+        calls: list[str] = []
+        call_details: list[dict[str, Any]] = []
+        results: list[dict] = []
+        calculator_results: list[dict] = []
+        for message in messages:
+            kind = cls._message_kind(message)
+            if kind in {"ai", "assistant"}:
+                for call in cls._message_value(message, "tool_calls", ()) or ():
+                    if isinstance(call, dict):
+                        name = call.get("name")
+                        function = call.get("function")
+                        if name is None and isinstance(function, dict):
+                            name = function.get("name")
+                        arguments = call.get("args")
+                        if arguments is None and isinstance(function, dict):
+                            arguments = function.get("arguments")
+                        call_id = call.get("id") or call.get("tool_call_id")
+                    else:
+                        name = getattr(call, "name", None)
+                        arguments = getattr(call, "args", None)
+                        call_id = getattr(call, "id", None)
+                    if name:
+                        tool_name = str(name)
+                        calls.append(tool_name)
+                        if isinstance(arguments, str):
+                            try:
+                                arguments = json.loads(arguments)
+                            except json.JSONDecodeError:
+                                arguments = {"raw": arguments[:1000]}
+                        call_details.append(
+                            {
+                                "id": str(call_id) if call_id is not None else None,
+                                "name": tool_name,
+                                "arguments": arguments if isinstance(arguments, (dict, list)) else {},
+                            }
+                        )
+                continue
+            if kind != "tool":
+                continue
+
+            content = cls._message_text(message)
+            try:
+                payload = json.loads(content)
+            except (TypeError, json.JSONDecodeError):
+                payload = None
+            entry = {
+                "name": cls._message_value(message, "name"),
+                "status": cls._message_value(message, "status", "success"),
+                "tool_call_id": cls._message_value(message, "tool_call_id"),
+            }
+            if isinstance(payload, dict):
+                raw_sources = payload.get("sources", ())
+                raw_facts = payload.get("validated_facts", ())
+                raw_sources = raw_sources if isinstance(raw_sources, list) else []
+                raw_facts = raw_facts if isinstance(raw_facts, list) else []
+                entry["source_count"] = len(raw_sources)
+                context = payload.get("context")
+                if isinstance(context, str):
+                    entry["context_chars"] = len(context)
+                entry["source_ids"] = [
+                    str(source.get("id"))
+                    for source in raw_sources
+                    if isinstance(source, dict) and source.get("id") is not None
+                ]
+                if not entry["source_ids"] and isinstance(payload.get("source_ids"), list):
+                    entry["source_ids"] = [str(source_id) for source_id in payload["source_ids"]]
+                entry["validated_fact_count"] = len(raw_facts)
+                if payload.get("plan_validated") is not None:
+                    entry["plan_validated"] = payload["plan_validated"]
+                    if isinstance(payload.get("plan"), dict):
+                        entry["request_plan"] = payload["plan"]
+                if payload.get("context_tokens") is not None:
+                    entry["context_tokens"] = payload["context_tokens"]
+                for field in ("coverage", "recovery_attempted", "recovery_exhausted",
+                              "statement_completeness", "statement_id", "answer_validated",
+                              "complete", "missing_requirement_ids", "final_answer_attempts", "request_coverage"):
+                    if field in payload:
+                        entry[field] = payload[field]
+                if payload.get("validation_error"):
+                    entry["error"] = payload["validation_error"]
+                    entry["status"] = "error"
+                    entry["error_code"] = "answer_validation_rejected"
+                if payload.get("candidate_count") is not None:
+                    entry["candidate_count"] = payload["candidate_count"]
+                if isinstance(payload.get("covered_groups"), list):
+                    entry["covered_groups"] = payload["covered_groups"]
+                if isinstance(payload.get("retrieval_diagnostics"), dict):
+                    entry["retrieval_diagnostics"] = payload[
+                        "retrieval_diagnostics"
+                    ]
+                fact_fields = (
+                    "fact_id", "ticker", "metric", "period", "raw_value",
+                    "numeric_value", "base_value", "value_type", "normalized_unit",
+                    "currency", "scale", "accounting_basis", "source_id",
+                    "row_label", "column_label", "validation_checks",
+                    "requirement_id", "evidence_excerpt",
+                    "value_qualifier",
+                    "evidence_context",
+                )
+                entry["validated_facts"] = [
+                    {key: fact.get(key) for key in fact_fields if key in fact}
+                    for fact in raw_facts
+                    if isinstance(fact, dict)
+                ]
+                entry["sources"] = [
+                    {
+                        key: source.get(key)
+                        for key in (
+                            "id", "ticker", "fiscal_year", "doc_type", "source",
+                            "section", "pdf_page", "parent_id", "evidence_mode",
+                        )
+                        if key in source
+                    }
+                    for source in raw_sources
+                    if isinstance(source, dict)
+                ]
+                for field in (
+                    "ticker", "filing_year", "year", "doc_type", "statement_type"
+                ):
+                    if payload.get(field) is not None:
+                        entry[field] = payload[field]
+                if payload.get("rejected_fact_count") is not None:
+                    entry["rejected_fact_count"] = payload["rejected_fact_count"]
+                if isinstance(payload.get("scope_adjustment"), dict):
+                    entry["scope_adjustment"] = payload["scope_adjustment"]
+                raw_rejections = payload.get("rejected_facts", ())
+                if isinstance(raw_rejections, list):
+                    entry["rejected_facts"] = [
+                        {
+                            key: rejected.get(key)
+                            for key in (
+                                "source_id", "metric", "reason", "period",
+                                "raw_value", "row_label", "column_label",
+                            )
+                            if key in rejected
+                        }
+                        for rejected in raw_rejections
+                        if isinstance(rejected, dict)
+                    ]
+
+                calc_fields = (
+                        "operation", "formula", "substituted_formula", "result",
+                        "result_unit", "currency", "scale", "input_fact_ids",
+                        "source_ids", "requested_fact_ids", "missing_fact_ids",
+                        "available_validated_facts", "error", "instruction",
+                        "calculation_skipped",
+                        "error_code", "error_type", "retryable", "error_detail",
+                        "calculation_id", "periods", "planned_input_requirement_ids", "input_order_adjusted",
+                )
+                if "calculator" in str(entry["name"] or "").casefold() or (
+                    "operation" in payload and "result" in payload
+                ):
+                    calculator_result = {
+                        key: payload.get(key) for key in calc_fields if key in payload
+                    }
+                    entry["calculator_result"] = calculator_result
+                    calculator_results.append(
+                        {"tool_call_id": entry["tool_call_id"], **calculator_result}
+                    )
+                if isinstance(payload.get("automatic_calculator_results"), list):
+                    entry["automatic_calculator_results"] = payload["automatic_calculator_results"]
+                    calculator_results.extend({"tool_call_id": entry["tool_call_id"], "execution_mode": "planned",
+                        **{key: calculation[key] for key in calc_fields if key in calculation}}
+                        for calculation in payload["automatic_calculator_results"] if isinstance(calculation, dict))
+                if payload.get("error"):
+                    entry["error"] = str(payload["error"])[:300]
+                    entry["status"] = "error"
+                    for field in (
+                        "error_code", "error_type", "retryable", "error_detail"
+                    ):
+                        if field in payload:
+                            entry[field] = payload[field]
+                elif str(entry.get("status") or "").casefold() == "error" and not entry.get("error"):
+                    entry["error"] = content[:300]
+            elif entry["status"] == "error":
+                # Framework validation messages put the actual field error after
+                # echoed arguments; preserve that detail for evaluation/debugging.
+                entry["error"] = content[-600:]
+            results.append(entry)
         return {
-            "id": source.get("id"),
-            "ticker": source.get("ticker"),
-            "fiscal_year": source.get("fiscal_year"),
-            "doc_type": source.get("doc_type"),
-            "compression": source.get("compression", {}),
-            "section": source.get("section"),
-            "source": source.get("source"),
-            "parent_id": source.get("parent_id"),
-            "dense_score": source.get("dense_score"),
-            "lexical_score": source.get("lexical_score"),
-            "lexical_coverage": source.get("lexical_coverage"),
-            "rrf_score": source.get("rrf_score"),
-            "pre_rerank_score": source.get("pre_rerank_score"),
-            "rerank_score": source.get("rerank_score"),
-            "rerank_provider": source.get("rerank_provider"),
-            "rerank_model": source.get("rerank_model"),
-            "final_score": source.get("score"),
+            "tool_calls": calls,
+            "tool_call_details": call_details,
+            "tool_results": results,
+            "calculator_results": calculator_results,
         }
 
-    @staticmethod
-    def _with_statement_rows(
-        bundle: RetrievalBundle, rows: tuple[VerifiedTableRow, ...]
-    ) -> tuple[RetrievalBundle, tuple[VerifiedTableRow, ...]]:
-        """Make verified indexed rows visible to generation with valid citations."""
-        if not rows:
-            return bundle, rows
-        sources = list(bundle.sources)
-        context = bundle.context
-        next_id = max(
-            (int(str(source.get("id", "S0"))[1:]) for source in sources
-             if re.fullmatch(r"S\d+", str(source.get("id", "")))),
-            default=0,
-        ) + 1
-        source_ids: dict[str, str] = {}
-        verified = []
-        for row in rows:
-            parent_id = str(row.source.get("parent_id"))
-            source_id = source_ids.get(parent_id)
-            if source_id is None:
-                source_id = f"S{next_id}"
-                next_id += 1
-                source_ids[parent_id] = source_id
-                source = {**row.source, "id": source_id}
-                sources.append(source)
-                context += (
-                    f"\n\n---\n\n[SOURCE {source_id} | TICKER: {source.get('ticker')} "
-                    f"| FISCAL YEAR: {source.get('fiscal_year')} | TYPE: 10K "
-                    f"| SECTION: {source.get('section')}]\n"
-                    f"{source['evidence_text']}"
-                )
-            verified.append(replace(row, source={**row.source, "id": source_id}))
-        return (
-            RetrievalBundle(context, sources, bundle.scope, bundle.candidate_count,
-                            bundle.covered_groups),
-            tuple(verified),
-        )
-
-    @staticmethod
-    def _retrieval_query(
-        question: str, history: list[dict] | None, *, is_followup: bool
-    ) -> str:
-        if not is_followup or not history:
-            return question
-        for message in reversed(history):
-            if message.get("role") == "user":
-                previous = " ".join(str(message.get("content", "")).split())[:800]
-                if previous:
-                    return f"{question}\nPrevious user question: {previous}"
-        return question
-
-    def _run_multihop(
+    def process_query(
         self,
+        inputs: dict[str, Any],
         *,
-        question: str,
+        thread_id: str,
         scope: Scope,
-        inherited_fields: tuple[str, ...],
-        history: list[dict] | None,
-        query_expansions: tuple[str, ...],
-        wants_table: bool,
-        trace: dict,
+        inherited_fields: tuple[str, ...] = (),
+        trace: dict | None = None,
     ) -> ChatResult:
-        executor = getattr(self, "multihop_executor", None)
-        if executor is None:
-            raise RuntimeError("Multi-hop orchestration is enabled but not initialized.")
-        if getattr(self, "agent_backend", "bounded") == "langchain":
-            planner = getattr(self, "multihop_planner", None)
-            agent = LangChainReActAgent(
-                planner=planner,
-                executor=executor,
-                generator=self.generator,
-                record=self._record,
-                retrieval_source_trace=self._retrieval_source_trace,
+        """Invoke the compiled LangGraph agent and adapt its answer for the UI."""
+        trace = dict(trace or {})
+        index_version = str(getattr(self, "index_version", "unknown") or "unknown")
+        messages: list[Any] = []
+        finalized_payload: dict | None = None
+        recovery_reason: str | None = None
+        # A graph run is isolated even if an injected graph has a checkpointer.
+        # Conversation continuity is passed explicitly as bounded chat history.
+        graph_run_id = uuid4().hex
+        config = {
+            "configurable": {"thread_id": graph_run_id},
+            # Each turn includes the context hook, model node and tool node.
+            # Reserve finalization and its one repair in addition to tool actions.
+            "recursion_limit": 3 * (AGENT_MAX_ACTIONS + 2) + 1,
+            "run_name": "finrag_agent",
+            "tags": [
+                "finrag",
+                "query",
+                "langgraph",
+                f"index:{index_version}",
+                *(f"ticker:{ticker}" for ticker in scope.tickers),
+                *(f"year:{year}" for year in scope.years),
+                *(
+                    f"doc_type:{doc_type}"
+                    for doc_type in (
+                        scope.required_doc_types
+                        or ((scope.doc_type,) if scope.doc_type else ())
+                    )
+                ),
+            ],
+            "metadata": {
+                "application": "finrag",
+                "request_id": str(trace.get("request_id") or ""),
+                "trace_id": str(trace.get("trace_id") or ""),
+                "index_version": index_version,
+                "scope_tickers": list(scope.tickers),
+                "scope_years": list(scope.years),
+                "scope_doc_types": list(
+                    scope.required_doc_types
+                    or ((scope.doc_type,) if scope.doc_type else ())
+                ),
+                "scope_tickers_csv": ",".join(scope.tickers),
+                "scope_years_csv": ",".join(scope.years),
+                "scope_doc_types_csv": ",".join(
+                    scope.required_doc_types
+                    or ((scope.doc_type,) if scope.doc_type else ())
+                ),
+                "scope_group_count": len(scope.retrieval_groups),
+                "comparison": scope.is_comparison,
+            },
+        }
+        try:
+            stream = getattr(self.agent_graph, "stream", None)
+            if callable(stream):
+                state: Any = {}
+                for state in stream(inputs, config=config, stream_mode="values"):
+                    check_request()
+                    if isinstance(state, dict) and isinstance(state.get("messages"), list):
+                        messages = state["messages"]
+                        for message in reversed(messages):
+                            if self._message_kind(message) != "tool":
+                                break
+                            try:
+                                payload = json.loads(self._message_text(message))
+                            except (TypeError, json.JSONDecodeError):
+                                continue
+                            if isinstance(payload, dict) and payload.get(
+                                "answer_validated"
+                            ):
+                                finalized_payload = payload
+                                break
+                            if isinstance(payload, dict) and payload.get(
+                                "final_answer_attempt_exhausted"
+                            ):
+                                recovery_reason = "answer_validation_exhausted"
+                                break
+                            if isinstance(payload, dict) and payload.get("plan_attempt_exhausted"):
+                                recovery_reason = "request_plan_validation_failed"
+                                break
+                            if (isinstance(payload, dict)
+                                    and (payload.get("context_budget_exhausted") or payload.get("action_budget_exhausted"))
+                                    and not getattr(self, "require_validated_answer", False)
+                                    and not any(self._message_value(item, "name") == "plan_financial_request" for item in messages)):
+                                recovery_reason = "tool_action_budget" if payload.get("action_budget_exhausted") else "retrieval_context_budget"
+                                break
+                    if finalized_payload is None and sum(
+                        self._message_kind(message) == "tool"
+                        and self._message_value(message, "name") == "finalize_financial_answer"
+                        for message in messages
+                    ) >= 2:
+                        recovery_reason = "answer_validation_exhausted"
+                    if recovery_reason or finalized_payload:
+                        break
+            else:
+                state = self.agent_graph.invoke(inputs, config=config)
+                messages = state.get("messages", []) if isinstance(state, dict) else []
+            if recovery_reason:
+                raise RuntimeError("The agent reached its request tool budget.")
+            if not isinstance(messages, list):
+                raise RuntimeError("The financial agent returned an invalid message state.")
+
+            final_message = next(
+                (
+                    message
+                    for message in reversed(messages)
+                    if self._message_kind(message) in {"ai", "assistant"}
+                    and not self._message_value(message, "tool_calls", ())
+                    and self._message_text(message)
+                ),
+                None,
             )
-            return agent.run(
-                question=question,
-                scope=scope,
+            for message in messages:
+                if self._message_kind(message) == "tool" and self._message_value(message, "name") == "finalize_financial_answer":
+                    try:
+                        payload = json.loads(self._message_text(message))
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(payload, dict) and payload.get("answer_validated"):
+                        finalized_payload = payload
+            if final_message is None and finalized_payload is None:
+                raise RuntimeError("The financial agent returned no assistant answer.")
+            answer = str(finalized_payload["answer"]) if finalized_payload else self._message_text(final_message)
+            plan_clarification = None
+            request_plan = None
+            for message in messages:
+                if self._message_kind(message) != "tool":
+                    continue
+                try:
+                    payload = json.loads(self._message_text(message))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("plan_validated") and isinstance(payload.get("plan"), dict):
+                    request_plan = payload["plan"]
+                planned_question = (
+                    payload.get("plan", {}).get("clarification")
+                    if isinstance(payload.get("plan"), dict)
+                    else None
+                )
+                if payload.get("clarification_required") or planned_question:
+                    plan_clarification = str(
+                        planned_question or payload.get("message") or answer
+                    )
+                    break
+            if plan_clarification:
+                original_question = self._latest_question_from_messages(
+                    inputs.get("messages", ())
+                )
+                pending = PendingClarification(
+                    original_question=original_question,
+                    scope=scope,
+                    missing_fields=("requested metric or analysis",),
+                )
+                trace["clarification"] = {
+                    **trace.get("clarification", {}),
+                    "pending_returned": True,
+                    "source": "validated_request_plan",
+                }
+                result = ChatResult(
+                    Decision.CLARIFY,
+                    plan_clarification,
+                    scope,
+                    inherited_fields=inherited_fields,
+                    trace=trace,
+                    pending_clarification=pending,
+                )
+                self._record({**trace, "decision": result.decision.value})
+                return result
+            sources = self._agent_sources(messages)
+            tool_diagnostics = self._agent_tool_diagnostics(messages)
+            if request_plan is not None:
+                trace["request_plan"] = request_plan
+            if finalized_payload is not None:
+                citation_check = validate_answer_payload(answer, sources)
+                complete = bool(finalized_payload.get("complete"))
+                decision = (
+                    Decision.ANSWERED if complete and citation_check.valid
+                    else Decision.VALIDATION_FAILED if complete
+                    else Decision.INSUFFICIENT_EVIDENCE
+                )
+                if complete and not citation_check.valid:
+                    answer = UNVERIFIABLE_RESPONSE
+                if complete and citation_check.valid:
+                    for result in tool_diagnostics["tool_results"]:
+                        if result.get("error"):
+                            result["resolved_in_final_answer"] = True
+                trace["answer_validation"] = {
+                    "checked": True, "valid": complete and citation_check.valid,
+                    "reason": (citation_check.reason if complete and not citation_check.valid
+                               else "validated_evidence_claims" if complete else "incomplete_request_plan"),
+                    "missing_requirement_ids": finalized_payload.get("missing_requirement_ids", []),
+                    "cited_source_ids": finalized_payload.get("cited_source_ids", []),
+                    "attempts": finalized_payload.get("final_answer_attempts", 1),
+                }
+                trace["agent"] = {
+                    **trace.get("agent", {}), "backend": "langgraph", "selected": True,
+                    "status": "completed", "thread_id": graph_run_id, **tool_diagnostics,
+                }
+                self._record({**trace, "decision": decision.value})
+                return ChatResult(decision, answer, scope, sources, inherited_fields, trace)
+            answer_validation = {
+                "checked": False,
+                "valid": False,
+                "reason": None,
+                "cited_source_ids": sorted(
+                    set(re.findall(r"\[(S\d+)\]", answer, flags=re.IGNORECASE))
+                ),
+            }
+            nonretryable_tool_errors = [
+                result
+                for result in tool_diagnostics["tool_results"]
+                if result.get("status") == "error"
+                and result.get("retryable") is not True
+            ]
+            normalized_answer = answer.casefold()
+            if nonretryable_tool_errors:
+                decision = Decision.VALIDATION_FAILED
+                answer_validation.update(
+                    checked=True,
+                    reason="nonretryable_tool_error",
+                    tool_error_codes=[
+                        result.get("error_code")
+                        for result in nonretryable_tool_errors
+                        if result.get("error_code")
+                    ],
+                )
+                answer = UNVERIFIABLE_RESPONSE
+            elif not sources:
+                decision = Decision.INSUFFICIENT_EVIDENCE
+                answer = INSUFFICIENT_EVIDENCE_RESPONSE
+            elif UNVERIFIABLE_RESPONSE.casefold() in normalized_answer:
+                decision = Decision.VALIDATION_FAILED
+            elif INSUFFICIENT_EVIDENCE_RESPONSE.casefold() in normalized_answer:
+                decision = Decision.INSUFFICIENT_EVIDENCE
+            else:
+                citation_check = validate_answer_payload(answer, sources)
+                if not citation_check.valid and citation_check.reason == "missing_source_ids":
+                    repaired = self._repair_uncited_answer(
+                        question=self._latest_question_from_messages(inputs.get("messages", ())),
+                        draft=answer,
+                        sources=sources,
+                        diagnostics=tool_diagnostics,
+                    )
+                    trace["citation_repair"] = {
+                        "attempted": True,
+                        "succeeded": bool(repaired),
+                    }
+                    if repaired:
+                        answer = repaired
+                        citation_check = validate_answer_payload(answer, sources)
+                answer_validation = {
+                    "checked": True,
+                    "valid": citation_check.valid,
+                    "reason": citation_check.reason,
+                    "cited_source_ids": list(citation_check.source_ids),
+                }
+                if citation_check.valid:
+                    answer = citation_check.answer
+                    cited_ids = set(citation_check.source_ids)
+                    cited_sources = [
+                        source for source in sources
+                        if str(source.get("id", "")).upper() in cited_ids
+                    ]
+                    required_types = scope.required_doc_types or (scope.doc_type,)
+                    missing_groups = [
+                        (ticker, year, doc_type)
+                        for ticker, year in scope.groups
+                        for doc_type in required_types
+                        if not any(
+                            str(source.get("ticker", "")).upper() == ticker
+                            and str(source.get("fiscal_year", "")) == year
+                            and (
+                                doc_type is None
+                                or str(source.get("doc_type", "")).upper().replace("-", "")
+                                == str(doc_type).upper().replace("-", "")
+                            )
+                            for source in cited_sources
+                        )
+                    ]
+                    calculator_source_ids = {
+                        str(source_id).upper()
+                        for result in tool_diagnostics["calculator_results"]
+                        if result.get("result") is not None
+                        for source_id in (result.get("source_ids") or ())
+                    }
+                    missing_calculation_citations = sorted(
+                        calculator_source_ids - cited_ids
+                    )
+                    planned_source_groups = {
+                        (
+                            str(requirement.get("ticker", "")).upper(),
+                            str(requirement.get("source_year", "")),
+                            str(requirement.get("doc_type", "")).upper().replace("-", ""),
+                        )
+                        for requirement in (request_plan or {}).get("requirements", ())
+                        if isinstance(requirement, dict)
+                    }
+                    missing_planned_groups = [
+                        group for group in sorted(planned_source_groups)
+                        if not any(
+                            str(source.get("ticker", "")).upper() == group[0]
+                            and str(source.get("fiscal_year", "")) == group[1]
+                            and str(source.get("doc_type", "")).upper().replace("-", "") == group[2]
+                            for source in cited_sources
+                        )
+                    ]
+                    remaining_calculations = list(tool_diagnostics["calculator_results"])
+                    missing_planned_calculations = []
+                    for planned in (request_plan or {}).get("calculations", ()):
+                        match_index = next((
+                            index for index, result in enumerate(remaining_calculations)
+                            if result.get("operation") == planned.get("operation")
+                            and result.get("result") is not None
+                            and len(result.get("input_fact_ids") or ())
+                            == len(planned.get("input_requirement_ids") or ())
+                        ), None)
+                        if match_index is None:
+                            missing_planned_calculations.append(planned.get("operation"))
+                        else:
+                            remaining_calculations.pop(match_index)
+                    if (
+                        missing_groups
+                        or missing_calculation_citations
+                        or missing_planned_groups
+                        or missing_planned_calculations
+                        or request_plan is not None
+                        or getattr(self, "require_validated_answer", False)
+                    ):
+                        reason = (
+                            "missing_planned_calculation"
+                            if missing_planned_calculations
+                            else "missing_planned_source_group_citation"
+                            if missing_planned_groups
+                            else "missing_scope_group_citation"
+                            if missing_groups
+                            else "missing_calculation_source_citation"
+                            if missing_calculation_citations
+                            else "missing_validated_answer"
+                        )
+                        answer_validation.update(
+                            valid=False,
+                            reason=reason,
+                            missing_groups=[list(group) for group in missing_groups],
+                            missing_calculation_source_ids=missing_calculation_citations,
+                            missing_planned_source_groups=[
+                                list(group) for group in missing_planned_groups
+                            ],
+                            missing_planned_calculations=missing_planned_calculations,
+                        )
+                        answer = UNVERIFIABLE_RESPONSE
+                        decision = Decision.VALIDATION_FAILED
+                    else:
+                        decision = Decision.ANSWERED
+                else:
+                    answer = UNVERIFIABLE_RESPONSE
+                    decision = Decision.VALIDATION_FAILED
+            trace["agent"] = {
+                **trace.get("agent", {}),
+                "name": "langgraph_financial_agent",
+                "backend": "langgraph",
+                "selected": True,
+                "status": "completed",
+                "route": "langgraph_react",
+                "thread_id": graph_run_id,
+                **tool_diagnostics,
+            }
+            trace["answer_validation"] = answer_validation
+            trace["retrieval"] = {
+                "tool": "search_financial_documents",
+                "source_ids": [source.get("id") for source in sources],
+                "source_groups": [
+                    [source.get("ticker"), source.get("fiscal_year"), source.get("doc_type")]
+                    for source in sources
+                ],
+            }
+            self._record({**trace, "decision": decision.value})
+            return ChatResult(
+                decision,
+                answer,
+                scope,
+                sources,
+                inherited_fields,
+                trace,
+            )
+        except Exception as error:
+            if isinstance(error, RequestAborted):
+                raise
+            error_info = classify_runtime_error(error)
+            if recovery_reason is None:
+                trace["error_type"] = type(error).__name__
+                trace["error_code"] = error_info.code
+                trace["retryable"] = error_info.retryable
+                if error_info.detail:
+                    trace["error_detail"] = error_info.detail
+            trace["agent"] = {
+                **trace.get("agent", {}),
+                "name": "langgraph_financial_agent",
+                "backend": "langgraph",
+                "selected": True,
+                "status": "validation_failed" if recovery_reason in {"answer_validation_exhausted", "request_plan_validation_failed"} else "budget_limited" if recovery_reason else "failed",
+                "route": "langgraph_react",
+            }
+            if messages:
+                partial_diagnostics = self._agent_tool_diagnostics(messages)
+                trace["agent"].update(partial_diagnostics)
+                partial_sources = self._agent_sources(messages)
+                has_plan = any(result.get("plan_validated") for result in partial_diagnostics["tool_results"])
+                if has_plan or getattr(self, "require_validated_answer", False):
+                    decision = (Decision.VALIDATION_FAILED if recovery_reason in {"answer_validation_exhausted", "request_plan_validation_failed"}
+                                else Decision.INSUFFICIENT_EVIDENCE if recovery_reason or type(error).__name__ == "GraphRecursionError"
+                                else Decision.ERROR)
+                    trace["answer_validation"] = {
+                        "checked": True, "valid": False,
+                        "reason": recovery_reason or "graph_stopped_before_validated_answer",
+                    }
+                    self._record({**trace, "decision": decision.value})
+                    return ChatResult(
+                        decision, "The request plan could not be validated before retrieval. Please rephrase this request." if recovery_reason == "request_plan_validation_failed" else
+                        UNVERIFIABLE_RESPONSE if decision == Decision.VALIDATION_FAILED else
+                        INSUFFICIENT_EVIDENCE_RESPONSE if decision == Decision.INSUFFICIENT_EVIDENCE else
+                        "The financial research agent could not complete this request. Please try again.",
+                        scope, partial_sources, inherited_fields, trace,
+                    )
+                trace["retrieval"] = {
+                    "tool": "search_financial_documents",
+                    "source_ids": [source.get("id") for source in partial_sources],
+                    "source_groups": [
+                        [source.get("ticker"), source.get("fiscal_year"), source.get("doc_type")]
+                        for source in partial_sources
+                    ],
+                }
+                recoverable_run = (
+                    type(error).__name__ == "GraphRecursionError"
+                    or recovery_reason is not None
+                )
+                if recoverable_run and partial_sources:
+                    partial_answer = self._repair_uncited_answer(
+                        question=self._latest_question_from_messages(
+                            inputs.get("messages", ())
+                        ),
+                        draft="",
+                        sources=partial_sources,
+                        diagnostics=partial_diagnostics,
+                    )
+                    answer_check = validate_answer_payload(
+                        partial_answer, partial_sources
+                    )
+                    cited_ids = set(answer_check.source_ids)
+                    cited_sources = [
+                        source for source in partial_sources
+                        if str(source.get("id", "")).upper() in cited_ids
+                    ]
+                    required_types = scope.required_doc_types or (scope.doc_type,)
+                    missing_groups = [
+                        (ticker, year, doc_type)
+                        for ticker, year in scope.groups
+                        for doc_type in required_types
+                        if not any(
+                            str(source.get("ticker", "")).upper() == ticker
+                            and str(source.get("fiscal_year", "")) == year
+                            and (
+                                doc_type is None
+                                or str(source.get("doc_type", "")).upper().replace("-", "")
+                                == str(doc_type).upper().replace("-", "")
+                            )
+                            for source in cited_sources
+                        )
+                    ]
+                    required_calculation_sources = {
+                        str(source_id).upper()
+                        for result in partial_diagnostics["calculator_results"]
+                        if result.get("result") is not None
+                        for source_id in (result.get("source_ids") or ())
+                    }
+                    if (
+                        answer_check.valid
+                        and not missing_groups
+                        and required_calculation_sources.issubset(cited_ids)
+                    ):
+                        trace["agent"]["status"] = "recovered"
+                        trace["answer_validation"] = {
+                            "checked": True,
+                            "valid": True,
+                            "reason": "graph_recursion_recovered",
+                            "cited_source_ids": sorted(cited_ids),
+                        }
+                        trace["answer_recovery"] = {
+                            "reason": recovery_reason or "graph_recursion",
+                            "used_partial_evidence": True,
+                        }
+                        self._record({**trace, "decision": Decision.ANSWERED.value})
+                        return ChatResult(
+                            Decision.ANSWERED,
+                            answer_check.answer,
+                            scope,
+                            partial_sources,
+                            inherited_fields,
+                            trace,
+                        )
+            self._record({**trace, "decision": Decision.ERROR.value})
+            return ChatResult(
+                Decision.ERROR,
+                "The financial research agent could not complete this request. "
+                "Please try again.",
+                scope,
                 inherited_fields=inherited_fields,
-                history=history,
-                query_expansions=query_expansions,
-                wants_table=wants_table,
                 trace=trace,
             )
 
-        planner = getattr(self, "multihop_planner", None)
-        if planner is None:
-            raise RuntimeError("Bounded multi-hop planner is not initialized.")
-        agent = BoundedReActAgent(
-            planner=planner,
-            executor=executor,
-            document_search_tool=self.document_search_tool,
-            generator=self.generator,
-            narrative_quote_selector=getattr(self, "narrative_quote_selector", None),
-            record=self._record,
-            retrieval_source_trace=self._retrieval_source_trace,
-        )
-        return agent.run(
-            question=question,
-            scope=scope,
-            inherited_fields=inherited_fields,
-            history=history,
-            query_expansions=query_expansions,
-            wants_table=wants_table,
-            trace=trace,
-        )
+    @staticmethod
+    def _latest_question_from_messages(messages: object) -> str:
+        if not isinstance(messages, (list, tuple)):
+            return ""
+        for message in reversed(messages):
+            role = ChatService._message_value(message, "role") or ChatService._message_value(message, "type")
+            if str(role).casefold() not in {"user", "human"}:
+                continue
+            content = ChatService._message_text(message)
+            marker = "User question:"
+            return content.rsplit(marker, 1)[-1].strip() if marker in content else content
+        return ""
+
+    def _repair_uncited_answer(
+        self,
+        *,
+        question: str,
+        draft: str,
+        sources: list[dict],
+        diagnostics: dict[str, Any],
+    ) -> str:
+        """Repair citation omissions once, using only the current run's evidence."""
+        evidence = {
+            "validated_facts": [
+                fact
+                for result in diagnostics.get("tool_results", ())
+                for fact in result.get("validated_facts", ())
+            ],
+            "calculator_results": [
+                result for result in diagnostics.get("calculator_results", ())
+                if result.get("result") is not None
+            ],
+            "sources": [
+                {
+                    key: source.get(key)
+                    for key in (
+                        "id", "ticker", "fiscal_year", "doc_type", "source",
+                        "section", "evidence_text",
+                    )
+                    if source.get(key) is not None
+                }
+                for source in sources
+            ],
+        }
+        if not evidence["sources"]:
+            return ""
+        model = getattr(self, "_answer_repair_model", None)
+        if model is None:
+            model = get_llm_engine()
+            self._answer_repair_model = model
+        try:
+            response = model.invoke([
+                SystemMessage(content=(
+                    "Compose a concise answer or rewrite the draft using only "
+                    "the supplied validated facts, calculator results, and source evidence. "
+                    "Cite every factual claim inline with the exact source ID in brackets. "
+                    "For calculations, use only the supplied calculator result and cite "
+                    "its source IDs. Do not calculate, infer missing values, or add claims. "
+                    "If a requested calculation has no calculator result, do not calculate "
+                    "it yourself; state which result or input is unavailable. If the evidence "
+                    "cannot answer part of the question, state that clearly."
+                )),
+                HumanMessage(content=json.dumps({
+                    "question": question,
+                    "draft": draft,
+                    "evidence": evidence,
+                }, ensure_ascii=False)),
+            ])
+            return self._message_text(response)
+        except Exception:
+            return ""
+
+    @trace_component("finrag.chat_request", run_type="chain", root=True)
     def ask(
         self,
         question: str,
@@ -318,27 +1065,45 @@ class ChatService:
         previous_scope: Scope | None = None,
         history: list[dict] | None = None,
         pending_clarification: PendingClarification | None = None,
+        thread_id: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
     ) -> ChatResult:
-        trace_id = uuid4().hex[:12]
+        trace_id = str(trace_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", trace_id):
+            trace_id = uuid4().hex[:12]
+        index_version = str(getattr(self, "index_version", "unknown") or "unknown")
         trace = {
             "trace_id": trace_id,
+            "request_id": str(request_id or ""),
+            "index_version": index_version,
             "question": question.strip()[:1000],
             "retrieval_pipeline": ["dense", "bm25", "rrf", "optional_cohere_rerank"],
             "reranker": self._reranker_trace(),
             "agent": {
-                "name": (
-                    "langchain_financial_react"
-                    if getattr(self, "agent_backend", AGENT_BACKEND) == "langchain"
-                    else "bounded_financial_react"
-                ),
-                "protocol": "reason_act_observe",
+                "name": "langgraph_financial_agent",
+                "backend": "langgraph",
                 "selected": False,
-                "status": "not_required",
-                "route": "optimized_single_hop",
-                "tools": ["document_search", "financial_calculator"],
-                "backend": getattr(self, "agent_backend", AGENT_BACKEND),
+                "status": "not_started",
+                "route": "scope_policy",
+                "tools": [
+                    "plan_financial_request",
+                    "search_financial_documents",
+                    "financial_calculator",
+                    "get_financial_statement",
+                    "finalize_financial_answer",
+                ],
             },
         }
+        annotate_current_trace(
+            {
+                "request_id": trace["request_id"],
+                "trace_id": trace_id,
+                "thread_id": str(thread_id or ""),
+                "index_version": index_version,
+            },
+            tags=("query", f"index:{index_version}"),
+        )
         question = question.strip()
         if not question:
             result = ChatResult(
@@ -348,7 +1113,7 @@ class ChatService:
             return result
 
         clarification_turn = (
-            merge_clarification_reply(pending_clarification, question)
+            merge_clarification_reply(pending_clarification, question, available_keys=self.available_keys)
             if pending_clarification is not None
             else None
         )
@@ -358,7 +1123,7 @@ class ChatService:
             candidate_tickers = clarification_turn.candidate_tickers
         else:
             effective_question = question
-            understanding = understand_query(question)
+            understanding = understand_query(question, available_keys=self.available_keys)
             candidate_tickers = ()
         trace["ui_scope"] = self._scope_data(ui_scope or Scope())
         trace["previous_scope"] = self._scope_data(previous_scope or Scope())
@@ -479,6 +1244,27 @@ class ChatService:
         }
         trace["resolved_scope"] = self._scope_data(resolution.scope)
         trace["inherited_fields"] = list(resolution.inherited_fields)
+        scope_doc_types = resolution.scope.required_doc_types or (
+            (resolution.scope.doc_type,) if resolution.scope.doc_type else ()
+        )
+        annotate_current_trace(
+            {
+                "scope_decision": resolution.decision.value,
+                "scope_tickers": resolution.scope.tickers,
+                "scope_years": resolution.scope.years,
+                "scope_doc_types": scope_doc_types,
+                "scope_tickers_csv": ",".join(resolution.scope.tickers),
+                "scope_years_csv": ",".join(resolution.scope.years),
+                "scope_doc_types_csv": ",".join(scope_doc_types),
+                "scope_group_count": len(resolution.scope.retrieval_groups),
+                "comparison": resolution.scope.is_comparison,
+            },
+            tags=tuple(
+                [*(f"ticker:{ticker}" for ticker in resolution.scope.tickers)]
+                + [*(f"year:{year}" for year in resolution.scope.years)]
+                + [*(f"doc_type:{doc_type}" for doc_type in scope_doc_types)]
+            ),
+        )
         if resolution.decision != Decision.SEARCH:
             pending_result = None
             result_scope = resolution.scope
@@ -520,236 +1306,49 @@ class ChatService:
             self._record({**trace, "decision": result.decision.value})
             return result
 
-        trace["multihop"] = {
-            "enabled": bool(getattr(self, "multihop_enabled", False)),
-            "selected": False,
-        }
-        lookup = getattr(self, "structured_lookup", None)
-        if lookup is not None:
-            direct = lookup.answer(
-                effective_question,
-                resolution.scope,
-                wants_complete_table=understanding.wants_complete_table,
+        agent_question = effective_question
+        if clarification_turn is not None and question != effective_question:
+            agent_question = (
+                f"{effective_question}\n\nUser clarification: {question}"
             )
-            if direct is not None:
-                trace["retrieval"] = {
-                    "mode": direct.mode,
-                    "source_ids": [source["id"] for source in direct.sources],
-                }
-                result = ChatResult(
-                    Decision.ANSWERED,
-                    expand_citations(direct.answer, direct.sources),
-                    resolution.scope,
-                    direct.sources,
-                    resolution.inherited_fields,
-                    trace,
-                )
-                self._record({**trace, "decision": result.decision.value})
-                return result
-
-        retrieval_query = self._retrieval_query(
-            understanding.normalized_query or effective_question,
-            history,
-            is_followup=understanding.generic_followup,
-        )
-        trace["retrieval_query"] = retrieval_query[:1800]
-        use_multihop = (
-            bool(getattr(self, "multihop_enabled", False))
-            and not understanding.wants_complete_table
-            and should_use_multihop(effective_question, resolution.scope)
-        )
-        trace["multihop"]["selected"] = use_multihop
-        if use_multihop:
-            return self._run_multihop(
-                question=effective_question,
-                scope=resolution.scope,
-                inherited_fields=resolution.inherited_fields,
-                history=history,
-                query_expansions=understanding.query_expansions,
-                wants_table=understanding.wants_table,
-                trace=trace,
-            )
-
-        # Exact statement cells are both cheaper and more reliable than ranked
-        # retrieval for complete, non-narrative, non-calculation requests. Any
-        # incomplete or unsupported shape falls through to the existing hybrid
-        # pipeline unchanged.
-        if (
-            lookup is not None
-            and hasattr(lookup, "statement_rows")
-            and not understanding.wants_table
-        ):
-            direct_rows = lookup.statement_rows(
-                effective_question,
-                resolution.scope,
-                value_years=understanding.reference_years,
-            )
-            direct_bundle, direct_rows = self._with_statement_rows(
-                RetrievalBundle(
-                    "", [], resolution.scope, 0,
-                    covered_groups=resolution.scope.groups,
-                ),
-                direct_rows,
-            )
-            direct_answer = verified_statement_answer_text(
-                direct_rows, resolution.scope, effective_question
-            )
-            if direct_answer is not None:
-                trace["retrieval"] = {
-                    "mode": "structured_statement",
-                    "candidate_count": 0,
-                    "source_ids": [source["id"] for source in direct_bundle.sources],
-                    "source_groups": [
-                        [source["ticker"], source["fiscal_year"], source["doc_type"]]
-                        for source in direct_bundle.sources
-                    ],
-                    "reranker_applied": False,
-                    "sources": [
-                        self._retrieval_source_trace(source)
-                        for source in direct_bundle.sources
-                    ],
-                    "verified_statement_rows": len(direct_rows),
-                }
-                trace["generation"] = {
-                    "mode": "verified_statement_answer",
-                    "attempts": 0,
-                    "validation_reason": "verified_structured_rows",
-                    "raw_output_previews": [],
-                }
-                result = ChatResult(
-                    Decision.ANSWERED,
-                    expand_citations(direct_answer, direct_bundle.sources),
-                    resolution.scope,
-                    direct_bundle.sources,
-                    resolution.inherited_fields,
-                    trace,
-                )
-                self._record({**trace, "decision": result.decision.value})
-                return result
-        try:
-            search_result = self.document_search_tool.execute(
-                DocumentSearchRequest(
-                    query=retrieval_query,
-                    scope=resolution.scope,
-                    query_expansions=understanding.query_expansions,
-                    preserve_all=understanding.wants_complete_table,
-                ),
-                permitted_scope=resolution.scope,
-            )
-            bundle = search_result.bundle
-            verified_rows: tuple[VerifiedTableRow, ...] = ()
-            if (
-                lookup is not None
-                and hasattr(lookup, "statement_rows")
-                and not understanding.wants_table
-            ):
-                verified_rows = lookup.statement_rows(
-                    effective_question,
-                    resolution.scope,
-                    value_years=understanding.reference_years,
-                )
-                bundle, verified_rows = self._with_statement_rows(bundle, verified_rows)
-        except Exception as error:
-            trace["error_type"] = type(error).__name__
-            self._record({**trace, "decision": Decision.ERROR.value})
-            return ChatResult(
-                Decision.ERROR,
-                "The document search could not be completed. Verify the selected index "
-                "and try again.",
-                resolution.scope,
-                inherited_fields=resolution.inherited_fields,
-                trace=trace,
-            )
-        source_traces = [
-            self._retrieval_source_trace(source) for source in bundle.sources
-        ]
-        trace["retrieval"] = {
-            "tool": self.document_search_tool.name,
-            "purpose": search_result.purpose.value,
-            "candidate_count": bundle.candidate_count,
-            "source_ids": [source["id"] for source in bundle.sources],
-            "source_groups": [
-                [source["ticker"], source["fiscal_year"], source["doc_type"]]
-                for source in bundle.sources
-            ],
-            # Configured means the Cohere stage exists. Applied means this
-            # particular request returned Cohere scores instead of using the
-            # fail-open RRF result.
-            "reranker_applied": any(
-                source.get("rerank_score") is not None for source in bundle.sources
+        locked_scope = {
+            **self._scope_data(resolution.scope),
+            "instruction": (
+                "Use these company, source filing/call year, and document type values for every search. "
+                "A reported period inside a source may differ from its source year."
             ),
-            "sources": source_traces,
-            "verified_statement_rows": len(verified_rows),
         }
-        if not bundle.context or not bundle.sources:
-            result = ChatResult(
-                Decision.INSUFFICIENT_EVIDENCE,
-                INSUFFICIENT_EVIDENCE_RESPONSE,
-                resolution.scope,
-                inherited_fields=resolution.inherited_fields,
-                trace=trace,
-            )
-            self._record({**trace, "decision": result.decision.value})
-            return result
-
-        missing = missing_comparison_groups(bundle)
-        if missing:
-            result = ChatResult(
-                Decision.INSUFFICIENT_EVIDENCE,
-                scope_coverage_message(missing, resolution.scope),
-                resolution.scope,
-                bundle.sources,
-                resolution.inherited_fields,
-                trace,
-            )
-            self._record({**trace, "decision": result.decision.value})
-            return result
-
-        try:
-            generation = self.generator.generate_with_trace(
-                effective_question,
-                bundle,
-                history=history,
-                wants_table=understanding.wants_table,
-                wants_complete_table=understanding.wants_complete_table,
-                verified_rows=(
-                    verified_rows
-                    if requires_verified_statement_values(effective_question)
-                    else ()
-                ),
-            )
-            answer = generation.answer
-            trace["generation"] = {
-                "attempts": generation.attempts,
-                "validation_reason": generation.validation_reason,
-                "raw_output_previews": list(generation.raw_output_previews),
+        user_message = (
+            "Application-resolved scope (locked): "
+            f"{json.dumps(locked_scope, ensure_ascii=True, sort_keys=True)}\n"
+            f"User question: {agent_question}"
+        )
+        messages: list[dict[str, str]] = []
+        # History resolves follow-up references only; retrieved tool evidence is
+        # never carried across turns. Bound both message count and text size.
+        for item in (history or [])[-6:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").casefold()
+            content = item.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+                content = " ".join(strip_citations(content).split())[:1_200]
+                if content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_message})
+        result = self.process_query(
+            {"messages": messages},
+            thread_id=thread_id or uuid4().hex,
+            scope=resolution.scope,
+            inherited_fields=resolution.inherited_fields,
+            trace=trace,
+        )
+        annotate_current_trace(
+            {
+                "final_decision": result.decision.value,
+                "answer_source_count": len(result.sources),
             }
-        except Exception as error:
-            trace["error_type"] = type(error).__name__
-            self._record({**trace, "decision": Decision.ERROR.value})
-            return ChatResult(
-                Decision.ERROR,
-                "The answer model could not complete this request. The retrieved evidence "
-                "was not converted into an answer; please try again.",
-                resolution.scope,
-                bundle.sources,
-                resolution.inherited_fields,
-                trace,
-            )
-        decision = (
-            Decision.VALIDATION_FAILED if answer == UNVERIFIABLE_RESPONSE
-            else Decision.INSUFFICIENT_EVIDENCE if answer == INSUFFICIENT_EVIDENCE_RESPONSE
-            else Decision.ANSWERED
         )
-        result = ChatResult(
-            decision,
-            answer,
-            resolution.scope,
-            bundle.sources,
-            resolution.inherited_fields,
-            trace,
-        )
-        self._record({**trace, "decision": result.decision.value})
         return result
 
     def close(self) -> None:

@@ -174,7 +174,8 @@ function cleanStoredChat(candidate) {
       role: message.role,
       content: String(message.content || "").slice(0, 100_000),
       decision: message.decision ? String(message.decision) : undefined,
-      sources: Array.isArray(message.sources) ? message.sources.slice(0, 12) : [],
+      sources: storedSources(message),
+      answer_format: message.answer_format ? String(message.answer_format) : null,
       trace: message.trace && typeof message.trace === "object" ? message.trace : null,
       metrics: cleanMetrics(message.metrics),
       inherited_fields: Array.isArray(message.inherited_fields) ? message.inherited_fields : [],
@@ -226,12 +227,18 @@ function loadHistory() {
   state.activeChatId = state.chats[0].id;
 }
 
+function storedSources(message) {
+  const sources = Array.isArray(message.sources) ? message.sources : [];
+  const cited = new Set(answerPresentation(message.content, sources).citedIds);
+  return sources.filter((source, index) => index < 12 || cited.has(String(source.id).toUpperCase()));
+}
+
 function compactForStorage(chat) {
   return {
     ...chat,
     messages: chat.messages.slice(-MAX_SAVED_MESSAGES).map((message) => ({
       ...message,
-      sources: (message.sources || []).slice(0, 12).map((source) => ({
+      sources: storedSources(message).map((source) => ({
         ...source,
         evidence_text: String(source.evidence_text || "").slice(0, 20_000),
       })),
@@ -617,7 +624,7 @@ function answerPresentation(value, sources) {
     /\n{2,}\*\*Sources\*\*\s*\n[\s\S]*$/i,
     "",
   );
-  const displayText = withoutAppendix
+  const displayText = withoutAppendix.replace(/^\s*```(?:markdown|md)\s*\n([\s\S]*?)\n```\s*$/i, "$1")
     .split(/\r?\n/)
     .filter((line) => !/^\s*(?:source|sources|citation|citations)\s*:\s*(?:\[S\d+\]\s*)+\.?\s*$/i.test(line))
     .join("\n")
@@ -632,8 +639,9 @@ function createCitationChip(sourceId, sources) {
   const citation = document.createElement("button");
   citation.type = "button";
   citation.className = "citation-chip";
-  citation.textContent = sourceId;
-  citation.setAttribute("aria-label", `Open evidence ${sourceId}`);
+  const source = sources.find((item) => String(item.id).toUpperCase() === sourceId.toUpperCase());
+  citation.textContent = source?.display_id || sourceId;
+  citation.setAttribute("aria-label", `Open evidence ${source?.display_id || sourceId}`);
   citation.addEventListener("click", () => openEvidence(sources, sourceId));
   return citation;
 }
@@ -720,7 +728,15 @@ function renderMessage(message) {
     article.append(note);
   }
 
-  const sources = message.sources || [];
+  const sources = (message.sources || []).map((source, index) => ({
+    ...source, display_id: source.internal_id ? source.id : `S${index + 1}`,
+  }));
+  if (message.decision === "answered" && !message.answer_format) {
+    const note = document.createElement("p");
+    note.className = "scope-note";
+    note.textContent = "Earlier answer format. Restart FinRAG and ask again to use the updated layout.";
+    article.append(note);
+  }
   const presentation = answerPresentation(message.content, sources);
   article.append(renderMarkdown(presentation.displayText, sources));
 
@@ -743,7 +759,7 @@ function renderMessage(message) {
       const evidenceButton = document.createElement("button");
       evidenceButton.type = "button";
       evidenceButton.className = "source-action";
-      evidenceButton.textContent = `View sources (${sources.length})`;
+      evidenceButton.textContent = `View sources (${presentation.citedIds.length} cited, ${sources.length} retrieved)`;
       evidenceButton.addEventListener("click", () => openEvidence(sources));
       actions.append(evidenceButton);
     }
@@ -770,22 +786,24 @@ function unescapeDisplayText(value) {
 function appendInline(parent, value, sources) {
   const text = unescapeDisplayText(value);
   const sourceIds = new Set(sources.map((source) => String(source.id).toUpperCase()));
-  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|\[(S\d+)\])/gi;
+  const tokenPattern = /(\\[\\`*_{}\[\]<>|#]|\*\*[^\n]+?\*\*|__(?=\S)[^\n]+?__|`[^`]+`|\*[^*\n]+\*|(?<!\w)_[^_\n]+_(?!\w)|\[(S\d+)\])/gi;
   let cursor = 0;
   for (const match of text.matchAll(tokenPattern)) {
     if (match.index > cursor) parent.append(document.createTextNode(text.slice(cursor, match.index)));
     const token = match[0];
-    if (token.startsWith("**")) {
+    if (token.startsWith("\\")) {
+      parent.append(document.createTextNode(token.slice(1)));
+    } else if (token.startsWith("**") || token.startsWith("__")) {
       const strong = document.createElement("strong");
-      strong.textContent = token.slice(2, -2);
+      appendInline(strong, token.slice(2, -2), sources);
       parent.append(strong);
     } else if (token.startsWith("`")) {
       const code = document.createElement("code");
       code.textContent = token.slice(1, -1);
       parent.append(code);
-    } else if (token.startsWith("*")) {
+    } else if (token.startsWith("*") || token.startsWith("_")) {
       const emphasis = document.createElement("em");
-      emphasis.textContent = token.slice(1, -1);
+      appendInline(emphasis, token.slice(1, -1), sources);
       parent.append(emphasis);
     } else {
       const sourceId = match[2].toUpperCase();
@@ -831,7 +849,7 @@ function isTableSeparator(line) {
 
 function startsBlock(lines, index) {
   const line = lines[index] || "";
-  return /^#{1,4}\s+/.test(line)
+  return /^#{1,6}\s+/.test(line)
     || /^```/.test(line.trim())
     || /^\s*[-*]\s+/.test(line)
     || /^\s*\d+\.\s+/.test(line)
@@ -868,9 +886,9 @@ function renderMarkdown(value, sources) {
       continue;
     }
 
-    const headingMatch = /^(#{1,4})\s+(.+)$/.exec(line);
+    const headingMatch = /^(#{1,6})\s+(.+)$/.exec(line);
     if (headingMatch) {
-      const level = Math.min(headingMatch[1].length + 1, 4);
+      const level = headingMatch[1].length;
       const heading = document.createElement(`h${level}`);
       appendInline(heading, headingMatch[2], sources);
       container.append(heading);
@@ -970,7 +988,7 @@ function renderMarkdown(value, sources) {
 
 function sourceTitle(source) {
   const docType = source.doc_type === "10K" ? "10-K" : (source.doc_type || "Document");
-  return `${source.id} · ${source.ticker || "Unknown"} ${source.fiscal_year || ""} ${docType}`.trim();
+  return `${source.display_id || source.id} · ${source.ticker || "Unknown"} ${source.fiscal_year || ""} ${docType}`.trim();
 }
 
 function openEvidence(sources, targetId = null) {
@@ -1134,6 +1152,7 @@ function requestPayload(question, chat, history) {
   const filters = readFilters();
   return {
     index_version: filters.index_version,
+    conversation_id: chat.id,
     question,
     history: history.slice(-24).map((message) => ({
       role: message.role,
@@ -1194,6 +1213,7 @@ async function submitQuestion(question, { retry = false } = {}) {
       role: "assistant",
       content: String(result.answer || ""),
       decision: String(result.decision || "response"),
+      answer_format: result.answer_format || null,
       sources: Array.isArray(result.sources) ? result.sources : [],
       trace: result.trace || null,
       metrics: cleanMetrics(result.metrics),

@@ -179,6 +179,12 @@ class UIFilters(ApiModel):
 
 class ChatRequest(ApiModel):
     index_version: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
     question: str = Field(min_length=1, max_length=4_000)
     history: list[HistoryMessage] = Field(default_factory=list, max_length=24)
     previous_scope: ScopePayload = Field(default_factory=ScopePayload)
@@ -222,6 +228,7 @@ class ScopeView(ApiModel):
 
 class SourceView(ApiModel):
     id: str
+    internal_id: str | None = None
     ticker: str | None = None
     fiscal_year: str | None = None
     fiscal_period: str | None = None
@@ -247,6 +254,10 @@ class RequestMetricsView(ApiModel):
     total_tokens: int = Field(ge=0)
     estimated_cost_usd: float | None = Field(default=None, ge=0)
     models: list[str] = Field(default_factory=list, max_length=8)
+    stages: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    embedding_calls: int = Field(default=0, ge=0)
+    embedding_input_tokens: int = Field(default=0, ge=0)
+    embedding_cost_usd: float | None = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def validate_token_totals(self) -> RequestMetricsView:
@@ -258,6 +269,7 @@ class RequestMetricsView(ApiModel):
 
 
 class ChatResponse(ApiModel):
+    answer_format: str = "structured-v2"
     request_id: str
     trace_id: str
     decision: str
@@ -300,6 +312,9 @@ class HealthResponse(ApiModel):
     service_ready: bool
     default_index: str
     index_count: int
+    langsmith_tracing_enabled: bool
+    langsmith_api_key_configured: bool
+    langsmith_project: str
 
 
 class ErrorItem(ApiModel):

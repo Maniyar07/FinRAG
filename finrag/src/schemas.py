@@ -149,6 +149,8 @@ class RetrievalBundle:
     scope: Scope
     candidate_count: int
     covered_groups: tuple[tuple[str, str], ...] = ()
+    context_tokens: int = 0
+    diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

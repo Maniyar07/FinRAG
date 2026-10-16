@@ -5,6 +5,7 @@ langchain-core==1.6.1
 langchain-text-splitters==1.1.2
 langchain-openai==1.6.0
 langchain-qdrant==1.1.0
+langsmith==0.12.2
 openai==2.45.0
 qdrant-client==1.19.0
 tiktoken==0.14.0

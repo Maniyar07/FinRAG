@@ -4,6 +4,7 @@ import re
 
 from src.retrieval.lexical_index import tokenize
 from src.retrieval.text_blocks import Block, blocks
+from src.retrieval.token_budget import count_tokens
 
 
 # Protect financial facts, reporting periods, units, and accounting qualifiers.
@@ -168,4 +169,96 @@ def compress(
         kept_blocks=len(selected),
         original_blocks=len(parts),
         table_count=len(table_indexes),
+    )
+
+
+def compress_to_budget(
+    text: str,
+    query: str,
+    *,
+    max_chars: int,
+    max_tokens: int,
+    keep_blocks: int = 6,
+) -> tuple[str, dict[str, object]]:
+    """Select complete, query-relevant blocks that fit the remaining budget.
+
+    This is the last-resort path used when the normally compressed parent is
+    still too large. It remains extractive and never slices a table, row, or
+    narrative block. Returning a focused excerpt is preferable to silently
+    discarding every source for a comparison group.
+    """
+    parts = blocks(text)
+    query_terms = set(tokenize(query))
+    if not parts or not query_terms or max_chars <= 0 or max_tokens <= 0:
+        return "", _stats(
+            "budget_excerpt_unavailable",
+            text,
+            "",
+            max_chars=max(0, max_chars),
+            max_tokens=max(0, max_tokens),
+        )
+
+    scores = [_query_overlap(part, query_terms) for part in parts]
+    matching = [index for index, score in enumerate(scores) if score > 0]
+    if not matching:
+        return "", _stats(
+            "budget_excerpt_no_query_match",
+            text,
+            "",
+            max_chars=max_chars,
+            max_tokens=max_tokens,
+        )
+
+    # Prefer blocks matching more distinct query terms. For equal overlap,
+    # tables come first because they usually contain the requested row, unit,
+    # and period headers together.
+    ranked = sorted(
+        matching,
+        key=lambda index: (
+            -scores[index],
+            -int(parts[index].is_table),
+            len(parts[index].text),
+            index,
+        ),
+    )
+    primary = ranked[: max(1, int(keep_blocks))]
+    priority: list[int] = []
+    for index in primary:
+        priority.append(index)
+        # Nearby headings and notes often carry the table scale or qualifier.
+        priority.extend((index - 1, index + 1))
+    priority.extend(ranked[len(primary) :])
+
+    selected: set[int] = set()
+    for index in priority:
+        if index < 0 or index >= len(parts) or index in selected:
+            continue
+        proposed = "".join(
+            parts[item].text for item in sorted((*selected, index))
+        ).strip()
+        if len(proposed) <= max_chars and count_tokens(proposed) <= max_tokens:
+            selected.add(index)
+
+    if not selected:
+        return "", _stats(
+            "budget_excerpt_no_block_fit",
+            text,
+            "",
+            matching_blocks=len(matching),
+            max_chars=max_chars,
+            max_tokens=max_tokens,
+        )
+
+    compressed = "".join(parts[index].text for index in sorted(selected)).strip()
+    return compressed, _stats(
+        "compressed_to_budget",
+        text,
+        compressed,
+        kept_blocks=len(selected),
+        original_blocks=len(parts),
+        matching_blocks=len(matching),
+        table_count=sum(parts[index].is_table for index in selected),
+        max_chars=max_chars,
+        max_tokens=max_tokens,
+        output_tokens=count_tokens(compressed),
     )

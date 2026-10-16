@@ -16,6 +16,8 @@ from dataclasses import dataclass, replace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from src.observability import trace_component
+from src.request_runtime import RequestAborted, check_request
 from src.schemas import RankedChild, Scope
 
 
@@ -70,6 +72,7 @@ class CohereRerankSettings:
     timeout_seconds: float
     retries: int
     max_document_chars: int
+    cooldown_seconds: float = 60.0
 
     @classmethod
     def from_environment(cls) -> CohereRerankSettings:
@@ -165,6 +168,7 @@ class CohereReranker:
         if not settings.model:
             raise ValueError("FINRAG_RERANK_MODEL cannot be empty.")
         self.settings = settings
+        self.retry_after = 0.0
 
     @staticmethod
     def _deduplicate_parents(children: list[RankedChild]) -> list[RankedChild]:
@@ -255,13 +259,22 @@ class CohereReranker:
 
         last_error: Exception | None = None
         for attempt in range(self.settings.retries + 1):
+            check_request()
             try:
                 with urlopen(request, timeout=self.settings.timeout_seconds) as response:
                     result = json.loads(response.read().decode("utf-8"))
                 return self._validate_scores(result, len(pool))
             except HTTPError as exc:
                 last_error = exc
+                if exc.code == 429:
+                    try:
+                        cooldown = float(exc.headers.get("Retry-After", self.settings.cooldown_seconds))
+                    except (ValueError, TypeError, AttributeError):
+                        cooldown = self.settings.cooldown_seconds
+                    self.retry_after = time.monotonic() + max(cooldown, self.settings.cooldown_seconds)
+                    break
                 if exc.code not in RETRYABLE_HTTP_CODES:
+                    self.retry_after = float("inf") if exc.code in {401, 403} else time.monotonic() + self.settings.cooldown_seconds
                     break
             except (URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
                 last_error = exc
@@ -269,9 +282,11 @@ class CohereReranker:
             if attempt < self.settings.retries:
                 time.sleep(0.5 * (2**attempt))
 
+        self.retry_after = max(self.retry_after, time.monotonic() + self.settings.cooldown_seconds)
         raise RuntimeError(
-            f"Cohere reranking failed after {self.settings.retries + 1} attempt(s): "
-            f"{type(last_error).__name__ if last_error else 'unknown error'}"
+            f"Cohere reranking failed after {attempt + 1} attempt(s): "
+            f"{type(last_error).__name__ if last_error else 'unknown error'} "
+            f"status={getattr(last_error, 'code', 'unavailable')}"
         ) from last_error
 
     @staticmethod
@@ -334,6 +349,7 @@ class CohereReranker:
 
         return sorted(selected, key=lambda child: (-child.fused_score, child.child_id))
 
+    @trace_component("finrag.retrieval.cohere_rerank", run_type="retriever")
     def rerank(
         self,
         query: str,
@@ -343,6 +359,8 @@ class CohereReranker:
         """Return Cohere-ranked children, or unchanged RRF children on failure."""
         if not children:
             return []
+        if time.monotonic() < self.retry_after:
+            return children
 
         pool, groups = self._candidate_pool(children, scope)
         if not pool:
@@ -350,6 +368,8 @@ class CohereReranker:
 
         try:
             scores = self._request_scores(query, pool)
+        except RequestAborted:
+            raise
         except RuntimeError as exc:
             LOGGER.warning("%s Falling back to dense + BM25 + RRF.", exc)
             return children

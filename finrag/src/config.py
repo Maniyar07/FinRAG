@@ -21,14 +21,27 @@ LOGS_DIR = RUNTIME_DATA_DIR / "logs"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
+# LangSmith's SDK accepts the exact lowercase string "true" for this setting.
+LANGSMITH_TRACING_ENABLED = os.getenv(
+    "LANGSMITH_TRACING", "false"
+).strip() == "true"
+LANGSMITH_API_KEY_CONFIGURED = bool(os.getenv("LANGSMITH_API_KEY", "").strip())
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "FinRAG").strip() or "FinRAG"
+LANGSMITH_ENDPOINT = os.getenv("LANGSMITH_ENDPOINT", "").strip() or None
 
 COLLECTION_NAME = os.getenv("FINRAG_QDRANT_COLLECTION", "finrag_documents")
 EMBEDDING_MODEL = os.getenv("FINRAG_EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(os.getenv("FINRAG_EMBEDDING_DIMENSIONS", "1536"))
 LLM_MODEL = os.getenv("FINRAG_LLM_MODEL", "gpt-4o-mini")
+LLM_BASE_URL = os.getenv("FINRAG_LLM_BASE_URL", "").strip() or None
+LLM_API_KEY = os.getenv("FINRAG_LLM_API_KEY", "").strip() or None
 LLM_PRICING_MODEL = os.getenv(
     "FINRAG_LLM_PRICING_MODEL", "gpt-4o-mini"
 ).strip()
+OPENAI_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("FINRAG_OPENAI_REQUEST_TIMEOUT_SECONDS", "30")
+)
+OPENAI_MAX_RETRIES = int(os.getenv("FINRAG_OPENAI_MAX_RETRIES", "1"))
 
 
 def _usd_per_million(name: str, default: str) -> Decimal:
@@ -78,6 +91,7 @@ DENSE_CANDIDATE_K = int(os.getenv("FINRAG_DENSE_CANDIDATE_K", "48"))
 LEXICAL_CANDIDATE_K = int(os.getenv("FINRAG_LEXICAL_CANDIDATE_K", "48"))
 MAX_CONTEXT_PARENTS = int(os.getenv("FINRAG_MAX_CONTEXT_PARENTS", "8"))
 MAX_CONTEXT_CHARS = int(os.getenv("FINRAG_MAX_CONTEXT_CHARS", "48000"))
+MAX_CONTEXT_TOKENS = int(os.getenv("FINRAG_MAX_CONTEXT_TOKENS", "12000"))
 MIN_DENSE_SCORE = float(os.getenv("FINRAG_MIN_DENSE_SCORE", "0.20"))
 MIN_LEXICAL_COVERAGE = float(os.getenv("FINRAG_MIN_LEXICAL_COVERAGE", "0.20"))
 
@@ -86,16 +100,11 @@ ACTIVE_INDEX_VERSION = os.getenv("FINRAG_INDEX_VERSION", "").strip()
 DEBUG_TRACES = os.getenv("FINRAG_DEBUG_TRACES", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
-MULTIHOP_ENABLED = os.getenv(
-    "FINRAG_MULTIHOP_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-MULTIHOP_MAX_SEARCHES = int(os.getenv("FINRAG_MULTIHOP_MAX_SEARCHES", "4"))
-MULTIHOP_MAX_CALCULATIONS = int(
-    os.getenv("FINRAG_MULTIHOP_MAX_CALCULATIONS", "6")
-)
-AGENT_BACKEND = os.getenv("FINRAG_AGENT_BACKEND", "langchain").strip().casefold()
 AGENT_MAX_ACTIONS = int(os.getenv("FINRAG_AGENT_MAX_ACTIONS", "8"))
-AGENT_TIMEOUT_SECONDS = float(os.getenv("FINRAG_AGENT_TIMEOUT_SECONDS", "30"))
+MAX_CONCURRENT_REQUESTS = int(os.getenv("FINRAG_MAX_CONCURRENT_REQUESTS", "4"))
+REQUEST_DEADLINE_SECONDS = float(os.getenv("FINRAG_REQUEST_DEADLINE_SECONDS", "120"))
+_embedding_price = os.getenv("FINRAG_EMBEDDING_INPUT_USD_PER_MILLION", "").strip()
+EMBEDDING_INPUT_USD_PER_MILLION = Decimal(_embedding_price) if _embedding_price else None
 
 
 @dataclass(frozen=True)
@@ -154,8 +163,14 @@ def validate_runtime_config(
         raise ValueError("FINRAG_LLM_PRICING_MODEL cannot be empty.")
     if not SEMANTIC_FALLBACK_MODEL:
         raise ValueError("FINRAG_SEMANTIC_FALLBACK_MODEL cannot be empty.")
+    if OPENAI_REQUEST_TIMEOUT_SECONDS <= 0:
+        raise ValueError("FINRAG_OPENAI_REQUEST_TIMEOUT_SECONDS must be positive.")
+    if OPENAI_MAX_RETRIES < 0:
+        raise ValueError("FINRAG_OPENAI_MAX_RETRIES cannot be negative.")
     if SEMANTIC_FALLBACK_TIMEOUT_SECONDS <= 0:
         raise ValueError("FINRAG_SEMANTIC_FALLBACK_TIMEOUT_SECONDS must be positive.")
+    if EMBEDDING_INPUT_USD_PER_MILLION is not None and (not EMBEDDING_INPUT_USD_PER_MILLION.is_finite() or EMBEDDING_INPUT_USD_PER_MILLION < 0):
+        raise ValueError("FINRAG_EMBEDDING_INPUT_USD_PER_MILLION must be finite and non-negative.")
     if not 0 <= MIN_DENSE_SCORE <= 1:
         raise ValueError("FINRAG_MIN_DENSE_SCORE must be between 0 and 1.")
     if not 0 <= MIN_LEXICAL_COVERAGE <= 1:
@@ -165,18 +180,14 @@ def validate_runtime_config(
         ("FINRAG_LEXICAL_CANDIDATE_K", LEXICAL_CANDIDATE_K),
         ("FINRAG_MAX_CONTEXT_PARENTS", MAX_CONTEXT_PARENTS),
         ("FINRAG_MAX_CONTEXT_CHARS", MAX_CONTEXT_CHARS),
-        ("FINRAG_MULTIHOP_MAX_SEARCHES", MULTIHOP_MAX_SEARCHES),
-        ("FINRAG_MULTIHOP_MAX_CALCULATIONS", MULTIHOP_MAX_CALCULATIONS),
+        ("FINRAG_MAX_CONTEXT_TOKENS", MAX_CONTEXT_TOKENS),
         ("FINRAG_AGENT_MAX_ACTIONS", AGENT_MAX_ACTIONS),
+        ("FINRAG_MAX_CONCURRENT_REQUESTS", MAX_CONCURRENT_REQUESTS),
+        ("FINRAG_REQUEST_DEADLINE_SECONDS", REQUEST_DEADLINE_SECONDS),
     )
     for name, value in positive_values:
         if value <= 0:
             raise ValueError(f"{name} must be positive.")
-    if AGENT_BACKEND not in {"bounded", "langchain"}:
-        raise ValueError("FINRAG_AGENT_BACKEND must be 'bounded' or 'langchain'.")
-    if AGENT_TIMEOUT_SECONDS <= 0:
-        raise ValueError("FINRAG_AGENT_TIMEOUT_SECONDS must be positive.")
-
     splitters = (
         ("10-K parent", PARENT_TOKENS_10K, PARENT_OVERLAP_10K),
         ("10-K child", CHILD_TOKENS_10K, CHILD_OVERLAP_10K),

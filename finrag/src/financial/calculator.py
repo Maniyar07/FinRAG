@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from decimal import Decimal, DivisionByZero, InvalidOperation, localcontext
+from decimal import (
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    ROUND_HALF_UP,
+    localcontext,
+)
 from enum import Enum
-import re
 
 from pydantic import Field, field_validator, model_validator
 
 from src.financial.models import FinancialModel, ValidatedFinancialFact, ValueType
+from src.financial.metric_terms import is_metric_match
+from src.observability import trace_component
 from src.financial.value_normalizer import SCALE_MULTIPLIERS
 
 
@@ -20,6 +27,7 @@ class CalculationOperation(str, Enum):
     BASIS_POINT_CHANGE = "basis_point_change"
     DIFFERENCE = "difference"
     RATIO = "ratio"
+    PERCENTAGE_OF = "percentage_of"
     CAGR = "cagr"
     SUM = "sum"
     PRODUCT = "product"
@@ -33,6 +41,7 @@ class CalculationRequest(FinancialModel):
     operation: CalculationOperation
     input_fact_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
     periods: Decimal | None = Field(default=None, gt=0)
+    decimal_places: int | None = Field(default=None, ge=0, le=12)
 
     @field_validator("input_fact_ids")
     @classmethod
@@ -50,6 +59,7 @@ class CalculationRequest(FinancialModel):
             CalculationOperation.BASIS_POINT_CHANGE,
             CalculationOperation.DIFFERENCE,
             CalculationOperation.RATIO,
+            CalculationOperation.PERCENTAGE_OF,
             CalculationOperation.CAGR,
             CalculationOperation.PRODUCT,
         }
@@ -107,18 +117,9 @@ def _require_compatible(facts: tuple[ValidatedFinancialFact, ...]) -> None:
 
 def _require_same_series(facts: tuple[ValidatedFinancialFact, ...]) -> None:
     first = facts[0]
-    if any(fact.ticker != first.ticker for fact in facts[1:]):
+    if any(fact.ticker.casefold() != first.ticker.casefold() for fact in facts[1:]):
         raise ValueError("Temporal changes require facts for the same company.")
-    def series_metric(value: str) -> str:
-        name = " ".join(value.casefold().split())
-        if re.fullmatch(r"(?:total )?revenues?", name):
-            return "revenue"
-        if name in {"operating income", "income from operations"}:
-            return "operating income"
-        return name
-
-    metric = series_metric(first.metric)
-    if any(series_metric(fact.metric) != metric for fact in facts[1:]):
+    if any(not is_metric_match(first.metric, fact.metric) for fact in facts[1:]):
         raise ValueError("Temporal changes require the same financial metric.")
 
 
@@ -142,6 +143,7 @@ def _in_reference_scale(
 class FinancialCalculator:
     """Calculate only from validated fact objects with retained provenance."""
 
+    @trace_component("finrag.financial.calculation", run_type="tool")
     def calculate(
         self,
         request: CalculationRequest,
@@ -151,6 +153,9 @@ class FinancialCalculator:
         if missing:
             raise ValueError("Unknown or unvalidated fact IDs: " + ", ".join(missing))
         facts = tuple(available_facts[fact_id] for fact_id in request.input_fact_ids)
+        if any(fact.value_qualifier and fact.value_qualifier.casefold() in {
+                "over", "exceed", "exceeds", "exceeded", "below", "more than", "less than", "at least", "at most", "up to"} for fact in facts):
+            raise ValueError("A bounded value cannot be used as an exact calculation input.")
         operation = request.operation
 
         if operation == CalculationOperation.SUM:
@@ -249,6 +254,22 @@ class FinancialCalculator:
                 raise ValueError(
                     "Ratio inputs have incompatible units or currencies."
                 )
+        elif operation == CalculationOperation.PERCENTAGE_OF:
+            numerator, denominator = facts
+            _require_compatible(facts)
+            if denominator.base_value == 0:
+                raise ValueError(
+                    "Percentage of is undefined when the denominator is zero."
+                )
+            result = (
+                numerator.base_value / denominator.base_value
+            ) * Decimal("100")
+            formula = "(numerator / denominator) * 100"
+            substituted = (
+                f"({_display(numerator.base_value)} / "
+                f"{_display(denominator.base_value)}) * 100"
+            )
+            result_unit, currency, scale = "percent", None, None
         elif operation == CalculationOperation.PRODUCT:
             left, right = facts
             dimensionless = {
@@ -318,6 +339,15 @@ class FinancialCalculator:
             result_unit, currency, scale = "percent", None, None
         else:  # pragma: no cover - enum validation makes this unreachable.
             raise ValueError(f"Unsupported calculation operation: {operation}.")
+
+        if request.decimal_places is not None:
+            quantum = Decimal(1).scaleb(-request.decimal_places)
+            with localcontext() as context:
+                context.prec = max(
+                    context.prec,
+                    len(result.as_tuple().digits) + request.decimal_places + 2,
+                )
+                result = result.quantize(quantum, rounding=ROUND_HALF_UP)
 
         return CalculationResult(
             operation=operation,

@@ -64,3 +64,18 @@ def strip_citations(text: str) -> str:
     text = SOURCE_LIST_RE.sub("", text)
     text = DISPLAY_CITATION_RE.sub("", text)
     return SOURCE_ID_RE.sub("", text)
+
+
+def compact_citations(answer: str, sources: list[dict]) -> tuple[str, list[dict]]:
+    """Assign response-local labels after validation, preserving evidence identity."""
+    source_by_id = {str(source["id"]): source for source in sources}
+    cited = tuple(dict.fromkeys(SOURCE_ID_RE.findall(answer)))
+    if not set(cited).issubset(source_by_id):
+        raise ValueError("Cannot relabel a citation absent from the response sources.")
+    ordered = tuple(dict.fromkeys((*cited, *source_by_id)))
+    labels = {key: f"S{index + 1}" for index, key in enumerate(ordered)}
+    return (
+        SOURCE_ID_RE.sub(lambda match: f"[{labels[match.group(1)]}]", answer),
+        [{**source_by_id[key], "id": labels[key],
+          "internal_id": source_by_id[key].get("internal_id") or key} for key in ordered],
+    )

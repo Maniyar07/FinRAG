@@ -5,9 +5,10 @@ import json
 import logging
 import os
 import re
+from dataclasses import asdict
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from time import perf_counter
+from time import perf_counter, monotonic
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -32,9 +33,18 @@ from backend.models import (
 )
 from backend.service_manager import ServiceFactory, ServiceManager
 from src.app.chat_service import ChatService
+from src.generation.citations import compact_citations
 from src.retrieval.clarification_policy import merge_clarification_reply
 from src.schemas import ChatResult, PendingClarification, Scope
 from src.telemetry import RequestMetrics, collect_usage
+from src.request_runtime import RequestAborted, RequestControl, request_control
+from src.config import (
+    LANGSMITH_API_KEY_CONFIGURED,
+    LANGSMITH_PROJECT,
+    LANGSMITH_TRACING_ENABLED,
+    MAX_CONCURRENT_REQUESTS,
+    REQUEST_DEADLINE_SECONDS,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -210,7 +220,7 @@ def _prepare_call(
     # A new substantive question supersedes an old clarification. Detect that
     # before validating the stored scope so stale state from another index
     # cannot block an unrelated request.
-    if pending is not None and merge_clarification_reply(pending, payload.question) is None:
+    if pending is not None and merge_clarification_reply(pending, payload.question, available_keys=service.available_keys) is None:
         pending = None
         pending_payload = None
     if pending_payload is not None:
@@ -332,19 +342,23 @@ def _trace_scope(value: object) -> dict[str, Any] | None:
     }
 
 
-def _finite_score(value: object) -> float | None:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return None
-    return score if score == score and abs(score) != float("inf") else None
-
-
 def _sanitize_trace(trace: object) -> dict[str, Any]:
-    """Whitelist retrieval diagnostics; omit prompts, context, queries, and previews."""
+    """Whitelist bounded tool diagnostics; omit retrieved context and model reasoning."""
     if not isinstance(trace, dict):
         return {}
     sanitized: dict[str, Any] = {}
+    for key in ("request_id", "trace_id", "index_version"):
+        value = trace.get(key)
+        valid_value = (
+            isinstance(value, str)
+            and (
+                REQUEST_ID_RE.fullmatch(value)
+                if key != "index_version"
+                else re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value)
+            )
+        )
+        if valid_value:
+            sanitized[key] = value
     pipeline = trace.get("retrieval_pipeline")
     if isinstance(pipeline, list):
         sanitized["retrieval_pipeline"] = [str(item)[:80] for item in pipeline[:12]]
@@ -435,218 +449,201 @@ def _sanitize_trace(trace: object) -> dict[str, Any]:
     if isinstance(inherited, list):
         sanitized["inherited_fields"] = [str(item)[:80] for item in inherited[:8]]
 
-    multihop = trace.get("multihop")
-    if isinstance(multihop, dict):
-        sanitized["multihop"] = {
-            "enabled": bool(multihop.get("enabled")),
-            "selected": bool(multihop.get("selected")),
+    plan = trace.get("request_plan")
+    if isinstance(plan, dict):
+        sanitized["request_plan"] = {
+            "requirements": [{
+                **{key: _clean_text(item.get(key), max_length=240) for key in
+                   ("requirement_id", "ticker", "source_year", "doc_type", "reported_period", "metric", "kind")},
+                "qualifiers": [str(value)[:80] for value in item.get("qualifiers", [])[:12]],
+            } for item in plan.get("requirements", [])[:40] if isinstance(item, dict)],
+            "calculations": [{
+                "operation": _clean_text(item.get("operation"), max_length=80),
+                "input_requirement_ids": [str(value)[:80] for value in item.get("input_requirement_ids", [])[:20]],
+                "periods": item.get("periods"),
+            } for item in plan.get("calculations", [])[:20] if isinstance(item, dict)],
+        }
+
+    answer_validation = trace.get("answer_validation")
+    if isinstance(answer_validation, dict):
+        sanitized["answer_validation"] = {
+            "checked": bool(answer_validation.get("checked")),
+            "valid": bool(answer_validation.get("valid")),
+            "reason": _clean_text(answer_validation.get("reason"), max_length=100),
+            "attempts": answer_validation.get("attempts"),
+            "missing_requirement_ids": [
+                str(item)[:80] for item in answer_validation.get("missing_requirement_ids", [])[:40]
+            ],
+            "cited_source_ids": [
+                str(item)[:32]
+                for item in answer_validation.get("cited_source_ids", [])[:24]
+            ],
+            "missing_groups": [
+                [str(part)[:40] for part in group[:3]]
+                for group in answer_validation.get("missing_groups", [])[:12]
+                if isinstance(group, (list, tuple))
+            ],
+            "missing_calculation_source_ids": [
+                str(item)[:32]
+                for item in answer_validation.get(
+                    "missing_calculation_source_ids", []
+                )[:24]
+            ],
+        }
+
+    citation_repair = trace.get("citation_repair")
+    if isinstance(citation_repair, dict):
+        sanitized["citation_repair"] = {
+            "attempted": bool(citation_repair.get("attempted")),
+            "succeeded": bool(citation_repair.get("succeeded")),
+        }
+    answer_recovery = trace.get("answer_recovery")
+    if isinstance(answer_recovery, dict):
+        sanitized["answer_recovery"] = {
+            "reason": _clean_text(answer_recovery.get("reason"), max_length=80),
+            "used_partial_evidence": bool(
+                answer_recovery.get("used_partial_evidence")
+            ),
         }
 
     agent = trace.get("agent")
     if isinstance(agent, dict):
         agent_view: dict[str, Any] = {
             "name": _clean_text(agent.get("name"), max_length=80),
-            "framework": _clean_text(agent.get("framework"), max_length=80),
             "backend": _clean_text(agent.get("backend"), max_length=40),
-            "protocol": _clean_text(agent.get("protocol"), max_length=80),
             "selected": bool(agent.get("selected")),
             "status": _clean_text(agent.get("status"), max_length=40),
             "route": _clean_text(agent.get("route"), max_length=80),
             "tools": [str(item)[:80] for item in agent.get("tools", [])[:6]],
-            "max_actions": max(0, int(agent.get("max_actions", 0) or 0)),
-            "actions_used": max(0, int(agent.get("actions_used", 0) or 0)),
-            "stop_reason": _clean_text(agent.get("stop_reason"), max_length=120),
+            "tool_calls": [str(item)[:80] for item in agent.get("tool_calls", [])[:24]],
         }
-        checklist = agent.get("task_checklist")
-        if isinstance(checklist, dict):
-            agent_view["task_checklist"] = {
-                "requirements": [
-                    {
-                        "requirement_id": _clean_text(
-                            item.get("requirement_id"), max_length=64
-                        ),
-                        "evidence_type": _clean_text(
-                            item.get("evidence_type"), max_length=32
-                        ),
-                        "document_type": _clean_text(
-                            item.get("document_type"), max_length=32
-                        ),
-                    }
-                    for item in checklist.get("requirements", [])[:8]
-                    if isinstance(item, dict)
-                ],
-                "calculations": [
-                    {
-                        "calculation_id": _clean_text(
-                            item.get("calculation_id"), max_length=64
-                        ),
-                        "operation": _clean_text(
-                            item.get("operation"), max_length=80
-                        ),
-                    }
-                    for item in checklist.get("calculations", [])[:8]
-                    if isinstance(item, dict)
-                ],
-            }
-        event_views: list[dict[str, Any]] = []
-        for event in agent.get("events", [])[:16]:
-            if not isinstance(event, dict):
+        call_details = []
+        for call in agent.get("tool_call_details", [])[:24]:
+            if not isinstance(call, dict):
                 continue
-            reason = event.get("reason") if isinstance(event.get("reason"), dict) else {}
-            action = event.get("action") if isinstance(event.get("action"), dict) else {}
-            arguments = (
-                action.get("arguments")
-                if isinstance(action.get("arguments"), dict)
-                else {}
-            )
-            observation = (
-                event.get("observation")
-                if isinstance(event.get("observation"), dict)
-                else {}
-            )
-            event_views.append(
-                {
-                    "step": max(0, int(event.get("step", 0) or 0)),
-                    "reason": {
-                        "decision": _clean_text(
-                            reason.get("decision"), max_length=80
-                        ),
-                        "evidence_type": _clean_text(
-                            reason.get("evidence_type"), max_length=40
-                        ),
-                        "operation": _clean_text(
-                            reason.get("operation"), max_length=80
-                        ),
-                    },
-                    "action": {
-                        "tool": _clean_text(action.get("tool"), max_length=80),
-                        "arguments": {
-                            "requirement_id": _clean_text(
-                                arguments.get("requirement_id"), max_length=64
-                            ),
-                            "calculation_id": _clean_text(
-                                arguments.get("calculation_id"), max_length=64
-                            ),
-                            "document_type": _clean_text(
-                                arguments.get("document_type"), max_length=32
-                            ),
-                            "evidence_type": _clean_text(
-                                arguments.get("evidence_type"), max_length=32
-                            ),
-                            "operation": _clean_text(
-                                arguments.get("operation"), max_length=80
-                            ),
-                            "input_fact_ids": [
-                                str(item)[:80]
-                                for item in arguments.get("input_fact_ids", [])[:20]
-                            ],
-                            "groups": [
-                                [str(part)[:64] for part in group[:2]]
-                                for group in arguments.get("groups", [])[:24]
-                                if isinstance(group, (list, tuple))
-                            ],
-                        },
-                    },
-                    "observation": {
-                        "status": _clean_text(
-                            observation.get("status"), max_length=80
-                        ),
-                        "retrieval_mode": _clean_text(
-                            observation.get("retrieval_mode"), max_length=80
-                        ),
-                        "candidate_count": max(
-                            0, int(observation.get("candidate_count", 0) or 0)
-                        ),
-                        "source_ids": [
-                            str(item)[:32]
-                            for item in observation.get("source_ids", [])[:24]
-                        ],
-                        "fact_ids": [
-                            str(item)[:80]
-                            for item in observation.get("fact_ids", [])[:24]
-                        ],
-                        "missing_groups": [
-                            [str(part)[:64] for part in group[:2]]
-                            for group in observation.get("missing_groups", [])[:24]
-                            if isinstance(group, (list, tuple))
-                        ],
-                        "result": _clean_text(
-                            observation.get("result"), max_length=120
-                        ),
-                        "result_unit": _clean_text(
-                            observation.get("result_unit"), max_length=80
-                        ),
-                    },
+            arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+            safe_arguments = {}
+            for key in (
+                "ticker", "filing_year", "doc_type", "query", "statement_type",
+                "fact_id_1", "fact_id_2", "fact_ids", "operation", "periods",
+                "decimal_places",
+            ):
+                value = arguments.get(key)
+                if isinstance(value, str):
+                    safe_arguments[key] = _clean_text(value, max_length=240)
+                elif isinstance(value, (int, float, bool)):
+                    safe_arguments[key] = value
+                elif isinstance(value, list):
+                    safe_arguments[key] = [str(item)[:100] for item in value[:20]]
+            call_details.append({
+                "id": _clean_text(call.get("id"), max_length=80),
+                "name": _clean_text(call.get("name"), max_length=80),
+                "arguments": safe_arguments,
+            })
+        agent_view["tool_call_details"] = call_details
+
+        result_views = []
+        for result in agent.get("tool_results", [])[:24]:
+            if not isinstance(result, dict):
+                continue
+            view = {
+                key: result.get(key)
+                for key in (
+                    "source_count", "context_chars", "validated_fact_count",
+                    "rejected_fact_count"
+                )
+                if isinstance(result.get(key), int)
+            }
+            view.update({
+                "name": _clean_text(result.get("name"), max_length=80),
+                "status": _clean_text(result.get("status"), max_length=40),
+                "tool_call_id": _clean_text(result.get("tool_call_id"), max_length=80),
+                "source_ids": [str(item)[:32] for item in result.get("source_ids", [])[:24]],
+            })
+            for key in (
+                "already_retrieved", "context_budget_exhausted",
+                "action_budget_exhausted", "recovery_attempted", "recovery_exhausted",
+                "answer_validated", "resolved_in_final_answer",
+            ):
+                if key in result:
+                    view[key] = bool(result.get(key))
+            for key in ("ticker", "filing_year", "doc_type", "statement_type", "statement_id"):
+                if result.get(key) is not None:
+                    view[key] = _clean_text(result[key], max_length=40)
+            coverage = result.get("coverage")
+            if isinstance(coverage, dict):
+                view["coverage"] = {
+                    key: [str(item)[:80] for item in coverage.get(key, [])[:40]]
+                    for key in ("covered_requirement_ids", "missing_requirement_ids")
                 }
-            )
-        agent_view["events"] = event_views
+            completeness = result.get("statement_completeness")
+            if isinstance(completeness, dict):
+                view["statement_completeness"] = {
+                    key: completeness[key] for key in
+                    ("complete", "truncated", "source_rows", "returned_rows", "rows", "scope")
+                    if isinstance(completeness.get(key), (str, int, bool))
+                }
+                view["statement_completeness"]["period_columns"] = [
+                    str(item)[:16] for item in completeness.get("period_columns", [])[:12]
+                ]
+            if isinstance(result.get("scope_adjustment"), dict):
+                view["scope_adjustment"] = {
+                    key: _clean_text(value, max_length=40)
+                    for key, value in result["scope_adjustment"].items()
+                    if key in {"requested_source_year", "locked_source_year"}
+                }
+            facts = []
+            for fact in result.get("validated_facts", [])[:12]:
+                if not isinstance(fact, dict):
+                    continue
+                facts.append({
+                    key: _clean_text(fact.get(key), max_length=180)
+                    for key in (
+                        "fact_id", "ticker", "metric", "period", "raw_value",
+                        "normalized_unit", "currency", "scale", "source_id",
+                    )
+                    if fact.get(key) is not None
+                })
+            view["validated_facts"] = facts
+            if result.get("error"):
+                view["error"] = _clean_text(result.get("error"), max_length=240)
+                view["error_code"] = _clean_text(result.get("error_code"), max_length=80)
+                view["retryable"] = bool(result.get("retryable"))
+            result_views.append(view)
+        agent_view["tool_results"] = result_views
+
+        calculator_views = []
+        for result in agent.get("calculator_results", [])[:12]:
+            if not isinstance(result, dict):
+                continue
+            calculator_views.append({
+                key: _clean_text(result.get(key), max_length=240)
+                for key in (
+                    "tool_call_id", "operation", "formula", "substituted_formula",
+                    "result", "result_unit", "currency", "scale", "error",
+                    "error_code", "instruction",
+                )
+                if result.get(key) is not None
+            } | {
+                key: [str(item)[:32] for item in result.get(key, [])[:20]]
+                for key in ("input_fact_ids", "source_ids", "requested_fact_ids", "missing_fact_ids")
+                if isinstance(result.get(key), list)
+            } | {
+                "calculation_skipped": bool(result.get("calculation_skipped"))
+            })
+        agent_view["calculator_results"] = calculator_views
         sanitized["agent"] = agent_view
 
     retrieval = trace.get("retrieval")
     if isinstance(retrieval, dict):
-        retrieval_view: dict[str, Any] = {
-            "mode": _clean_text(retrieval.get("mode"), max_length=40),
-            "candidate_count": max(0, int(retrieval.get("candidate_count", 0))),
-            "verified_statement_rows": max(
-                0, int(retrieval.get("verified_statement_rows", 0))
-            ),
+        sanitized["retrieval"] = {
+            "tool": _clean_text(retrieval.get("tool"), max_length=80),
             "source_ids": [str(item)[:32] for item in retrieval.get("source_ids", [])[:24]],
             "source_groups": [
                 [str(part)[:64] for part in group[:3]]
                 for group in retrieval.get("source_groups", [])[:24]
                 if isinstance(group, (list, tuple))
             ],
-            "reranker_applied": bool(retrieval.get("reranker_applied")),
-        }
-        trace_sources: list[dict[str, Any]] = []
-        allowed_text = (
-            "id",
-            "ticker",
-            "fiscal_year",
-            "doc_type",
-            "section",
-            "source",
-            "rerank_provider",
-            "rerank_model",
-        )
-        allowed_scores = (
-            "dense_score",
-            "lexical_score",
-            "lexical_coverage",
-            "rrf_score",
-            "pre_rerank_score",
-            "rerank_score",
-            "final_score",
-        )
-        for item in retrieval.get("sources", [])[:24]:
-            if not isinstance(item, dict):
-                continue
-            entry = {
-                key: _safe_filename(item.get(key))
-                if key == "source"
-                else _clean_text(item.get(key), max_length=500)
-                for key in allowed_text
-            }
-            entry.update({key: _finite_score(item.get(key)) for key in allowed_scores})
-            compression = item.get("compression")
-            if isinstance(compression, dict):
-                entry["compression"] = {
-                    "status": _clean_text(compression.get("status"), max_length=80),
-                    "original_len": max(0, int(compression.get("original_len", 0))),
-                    "compressed_len": max(0, int(compression.get("compressed_len", 0))),
-                    "reduction_pct": _finite_score(compression.get("reduction_pct")),
-                }
-            trace_sources.append(entry)
-        retrieval_view["sources"] = trace_sources
-        sanitized["retrieval"] = retrieval_view
-
-    generation = trace.get("generation")
-    if isinstance(generation, dict):
-        sanitized["generation"] = {
-            "attempts": max(0, int(generation.get("attempts", 0))),
-            "validation_reason": _clean_text(
-                generation.get("validation_reason"), max_length=200
-            ),
         }
     return sanitized
 
@@ -675,14 +672,15 @@ def _chat_response(
         if view is not None
     ]
     decision = getattr(result.decision, "value", str(result.decision))
+    answer, source_data = compact_citations(str(result.answer), [source.model_dump() for source in sources])
     return ChatResponse(
         request_id=request_id,
         trace_id=trace_id,
         decision=str(decision),
-        answer=str(result.answer),
+        answer=answer,
         scope=_scope_view(result.scope),
         inherited_fields=[str(item) for item in result.inherited_fields],
-        sources=sources,
+        sources=[SourceView.model_validate(source) for source in source_data],
         metrics=RequestMetricsView(
             latency_ms=metrics.latency_ms,
             llm_calls=metrics.llm_calls,
@@ -692,6 +690,10 @@ def _chat_response(
             total_tokens=metrics.total_tokens,
             estimated_cost_usd=metrics.estimated_cost_usd,
             models=[str(model)[:120] for model in metrics.models[:8]],
+            stages=metrics.stages,
+            embedding_calls=metrics.embedding_calls,
+            embedding_input_tokens=metrics.embedding_input_tokens,
+            embedding_cost_usd=metrics.embedding_cost_usd,
         ),
         pending_clarification=_pending_view(result.pending_clarification),
         trace=_sanitize_trace(result_trace) if include_trace and allow_traces else None,
@@ -706,17 +708,60 @@ async def _measured_ask(
     previous_scope: Scope,
     history: list[dict],
     pending_clarification: PendingClarification | None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
+    trace_id: str | None = None,
+    limiter: asyncio.Semaphore | None = None,
+    pending_workers: dict | None = None,
+    request: Request | None = None,
 ) -> tuple[ChatResult, RequestMetrics]:
     with collect_usage() as usage:
         started = perf_counter()
-        result = await asyncio.to_thread(
-            service.ask,
-            question,
-            ui_scope=ui_scope,
-            previous_scope=previous_scope,
-            history=history,
-            pending_clarification=pending_clarification,
-        )
+        ask_kwargs: dict[str, Any] = {
+            "ui_scope": ui_scope,
+            "previous_scope": previous_scope,
+            "history": history,
+            "pending_clarification": pending_clarification,
+            "request_id": request_id,
+            "trace_id": trace_id,
+        }
+        if conversation_id is not None:
+            ask_kwargs["thread_id"] = conversation_id
+        control = RequestControl(monotonic() + REQUEST_DEADLINE_SECONDS)
+        async def work():
+            async with limiter or asyncio.Semaphore(1):
+                with request_control(control):
+                    return await asyncio.to_thread(service.ask, question, **ask_kwargs)
+        worker = asyncio.create_task(work())
+        if pending_workers is not None:
+            pending_workers[worker] = control
+        def finished(task):
+            if pending_workers is not None:
+                pending_workers.pop(task, None)
+            if not task.cancelled():
+                task.exception()  # Observe failures from disconnected clients.
+            if control.cancelled.is_set():
+                LOGGER.info("Request worker completed after cancellation: %s", json.dumps({
+                    "request_id": request_id,
+                    "metrics": asdict(usage.snapshot(latency_ms=(perf_counter() - started) * 1000)),
+                }))
+        worker.add_done_callback(finished)
+        try:
+            while request is not None and not worker.done():
+                if await request.is_disconnected():
+                    raise asyncio.CancelledError
+                if monotonic() >= control.deadline:
+                    raise TimeoutError
+                await asyncio.wait({worker}, timeout=0.25)
+            result = await asyncio.wait_for(
+                asyncio.shield(worker), max(0.001, control.deadline - monotonic())
+            )
+        except asyncio.CancelledError:
+            control.cancelled.set()
+            raise
+        except (TimeoutError, RequestAborted) as error:
+            control.cancelled.set()
+            raise ApiProblem(504, "request_timeout", "The request exceeded its time limit.") from error
         latency_ms = (perf_counter() - started) * 1000
     return result, usage.snapshot(latency_ms=latency_ms)
 
@@ -748,9 +793,16 @@ def create_app(
     async def lifespan(application: FastAPI):
         await asyncio.to_thread(manager.start)
         application.state.service_manager = manager
+        application.state.request_limiter = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        application.state.pending_workers = {}
         try:
             yield
         finally:
+            pending_workers = dict(application.state.pending_workers)
+            for control in pending_workers.values():
+                control.cancelled.set()
+            if pending_workers:
+                await asyncio.gather(*pending_workers, return_exceptions=True)
             await asyncio.to_thread(manager.close)
             application.state.service_manager = None
 
@@ -779,6 +831,8 @@ def create_app(
         request.state.request_id = uuid4().hex
         request.state.trace_id = uuid4().hex[:16]
         response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Trace-ID"] = request.state.trace_id
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -853,6 +907,9 @@ def create_app(
             service_ready=service_manager.ready,
             default_index=service_manager.default_index,
             index_count=len(service_manager.index_versions),
+            langsmith_tracing_enabled=LANGSMITH_TRACING_ENABLED,
+            langsmith_api_key_configured=LANGSMITH_API_KEY_CONFIGURED,
+            langsmith_project=LANGSMITH_PROJECT,
         )
 
     @application.get(
@@ -878,6 +935,7 @@ def create_app(
         service_manager = _manager(request)
         service = _service_for_request(service_manager, payload)
         ui_scope, previous_scope, history, pending = _prepare_call(service, payload)
+        request_id, trace_id = _request_ids(request)
         result, metrics = await _measured_ask(
             service,
             payload.question,
@@ -885,6 +943,12 @@ def create_app(
             previous_scope=previous_scope,
             history=history,
             pending_clarification=pending,
+            conversation_id=payload.conversation_id,
+            request_id=request_id,
+            trace_id=trace_id,
+            limiter=request.app.state.request_limiter,
+            pending_workers=request.app.state.pending_workers,
+            request=request,
         )
         return _chat_response(
             result,
@@ -903,6 +967,7 @@ def create_app(
         service_manager = _manager(request)
         service = _service_for_request(service_manager, payload)
         ui_scope, previous_scope, history, pending = _prepare_call(service, payload)
+        request_id, trace_id = _request_ids(request)
 
         async def events():
             ask_task: asyncio.Task[tuple[ChatResult, RequestMetrics]] | None = None
@@ -935,6 +1000,11 @@ def create_app(
                         previous_scope=previous_scope,
                         history=history,
                         pending_clarification=pending,
+                        conversation_id=payload.conversation_id,
+                        request_id=request_id,
+                        trace_id=trace_id,
+                        limiter=request.app.state.request_limiter,
+                        pending_workers=request.app.state.pending_workers,
                     )
                 )
                 while not ask_task.done():
@@ -975,8 +1045,11 @@ def create_app(
                     ask_task.cancel()
                 raise
             except Exception:
-                request_id, trace_id = _request_ids(request)
-                LOGGER.exception("Unhandled streaming API error (request_id=%s).", request_id)
+                error_request_id, error_trace_id = _request_ids(request)
+                LOGGER.exception(
+                    "Unhandled streaming API error (request_id=%s).",
+                    error_request_id,
+                )
                 if not await request.is_disconnected():
                     yield _sse(
                         "error",
@@ -984,8 +1057,8 @@ def create_app(
                             "error": {
                                 "code": "stream_error",
                                 "message": "The request could not be completed.",
-                                "request_id": request_id,
-                                "trace_id": trace_id,
+                                "request_id": error_request_id,
+                                "trace_id": error_trace_id,
                             }
                         },
                     )

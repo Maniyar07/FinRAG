@@ -16,6 +16,25 @@ TICKER_RE = re.compile(r"^[A-Z0-9.]{1,10}$")
 class FinancialModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    @field_validator("accounting_basis", mode="before", check_fields=False)
+    @classmethod
+    def normalize_accounting_basis(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        placeholder = re.sub(r"[^a-z0-9]+", "", normalized.casefold())
+        if placeholder in {
+            "",
+            "null",
+            "none",
+            "na",
+            "notapplicable",
+            "notspecified",
+            "unknown",
+        }:
+            return None
+        return normalized
+
 
 class ValueType(str, Enum):
     CURRENCY = "currency"
@@ -31,17 +50,24 @@ class CandidateFinancialFact(FinancialModel):
     """One model-extracted claim that still requires deterministic validation."""
 
     ticker: str = Field(min_length=1, max_length=10)
+    requirement_id: str | None = Field(default=None, max_length=32,
+        description="ID of the requested numeric requirement; null without a request plan. This links source terminology to the request and does not bypass validation.")
+    source_id: str | None = None
     metric: str = Field(min_length=1, max_length=200)
     period: str = Field(min_length=1, max_length=100)
-    raw_value: str = Field(min_length=1, max_length=100)
+    row_label: str | None = Field(default=None, max_length=300,
+        description="Literal source measurement label: copy the actual table row or prose noun phrase. Preserve abbreviations; do not expand or paraphrase source labels. For prose this anchors the measurement in its own evidence excerpt.")
+    column_label: str | None = Field(default=None, max_length=200,
+        description="Locate the actual leaf measure column BEFORE copying the value. A date spanning columns cannot identify cost, fair value or counts. Keep the reported date/year in period.")
+    accounting_basis: str | None = Field(default=None, max_length=50,
+        description="Copy the selected measurement basis if stated. Select the requested reported quantity, not a related cost, valuation adjustment, subtotal or broader balance.")
+    raw_value: str = Field(min_length=1, max_length=100,
+        description="Copy the exact cell or contiguous prose amount BEFORE choosing unit/scale. Preserve all digits, sign and any stated scale; never convert or round it.")
     unit: str | None = Field(default=None, max_length=100)
     scale: str | None = Field(default=None, max_length=30)
-    currency: str | None = Field(default=None, max_length=10)
-    accounting_basis: str | None = Field(default=None, max_length=50)
-    source_id: str
+    currency: str | None = Field(default=None, max_length=10,
+        description="ISO currency code such as USD, or null when absent. Do not put a scale, unit name, or the word 'null' here.")
     evidence_excerpt: str = Field(min_length=1, max_length=1_000)
-    row_label: str | None = Field(default=None, max_length=300)
-    column_label: str | None = Field(default=None, max_length=200)
 
     @field_validator("ticker", mode="before")
     @classmethod
@@ -53,7 +79,9 @@ class CandidateFinancialFact(FinancialModel):
 
     @field_validator("source_id", mode="before")
     @classmethod
-    def normalize_source_id(cls, value: object) -> str:
+    def normalize_source_id(cls, value: object) -> str | None:
+        if value is None or str(value).strip().casefold() in {"", "null", "none", "n/a"}:
+            return None
         source_id = str(value).strip().upper()
         # Structured models occasionally repeat the literal header prefix.
         # Normalize that harmless presentation variation while retaining the
@@ -66,7 +94,7 @@ class CandidateFinancialFact(FinancialModel):
     @field_validator("currency", mode="before")
     @classmethod
     def normalize_currency(cls, value: object | None) -> str | None:
-        if value is None or not str(value).strip():
+        if value is None or str(value).strip().casefold() in {"", "null", "none", "n/a", "unknown"}:
             return None
         currency = str(value).strip().upper()
         return {
@@ -79,7 +107,7 @@ class CandidateFinancialFact(FinancialModel):
 
 
 class FactExtractionPayload(FinancialModel):
-    facts: list[CandidateFinancialFact] = Field(default_factory=list, max_length=24)
+    facts: list[CandidateFinancialFact] = Field(default_factory=list, max_length=40)
 
 
 class NormalizedFinancialValue(FinancialModel):
@@ -110,10 +138,13 @@ class ValidatedFinancialFact(FinancialModel):
     row_label: str | None = None
     column_label: str | None = None
     validation_checks: tuple[str, ...]
+    requirement_id: str | None = None
+    value_qualifier: str | None = None
+    evidence_context: str | None = None
 
 
 class RejectedFinancialFact(FinancialModel):
-    source_id: str
+    source_id: str | None = None
     metric: str
     reason: str
     period: str | None = None

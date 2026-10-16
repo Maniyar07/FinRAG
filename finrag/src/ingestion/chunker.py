@@ -21,6 +21,7 @@ from src.constants import CHUNK_SCHEMA_VERSION
 from src.ingestion.document_processing import PAGE_MARKER_RE, page_range
 from src.ingestion.lexical_store import write_lexical_index
 from src.ingestion.parent_store import ParentStore
+from src.observability import trace_component
 
 
 ID_KEY = "parent_id"
@@ -129,6 +130,7 @@ class FinancialChunker:
         ]
         return "[" + " | ".join(str(value) for value in fields if value) + "]\n"
 
+    @trace_component("finrag.ingestion.chunk_documents")
     def build_chunks(
         self, documents: list[Document]
     ) -> tuple[list[tuple[str, Document]], list[Document], list[str]]:
@@ -193,6 +195,7 @@ class FinancialChunker:
             raise RuntimeError("Deterministic child ID collision detected.")
         return parents, children, child_ids
 
+    @trace_component("finrag.ingestion.embed_and_index")
     def process_and_add_documents(
         self, documents: list[Document], *, batch_size: int = 128
     ) -> dict[str, int]:

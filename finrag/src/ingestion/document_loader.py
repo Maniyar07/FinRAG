@@ -29,6 +29,7 @@ from src.ingestion.document_processing import (
     stable_id,
 )
 from src.ingestion.source_inventory import CorpusInventory, discover_sources
+from src.observability import trace_component
 from src.schemas import SourceFile
 
 
@@ -104,6 +105,7 @@ class FinancialDocumentLoader:
             self.parser = LlamaCloudMarkdownParser(str(LLAMA_CLOUD_API_KEY))
         return self.parser
 
+    @trace_component("finrag.ingestion.load_documents")
     def load_documents(
         self,
         data_dir: str | Path | None = None,
@@ -123,6 +125,7 @@ class FinancialDocumentLoader:
             raise ValueError("No usable source segments were produced.")
         return documents
 
+    @trace_component("finrag.ingestion.source_preflight")
     def preflight_sources(self, inventory: CorpusInventory) -> None:
         """Fail before paid parsing if a local source is empty or clearly unusable."""
         errors: list[str] = []
@@ -148,6 +151,7 @@ class FinancialDocumentLoader:
         if errors:
             raise ValueError("Source preflight failed:\n- " + "\n- ".join(errors))
 
+    @trace_component("finrag.ingestion.parse_source")
     def load_source(self, source: SourceFile) -> list[Document]:
         if source.doc_type == "10K":
             return self._load_10k(source)

@@ -8,6 +8,7 @@ from src.ingestion.chunker import FinancialChunker
 from src.ingestion.document_loader import FinancialDocumentLoader
 from src.ingestion.manifest import build_manifest, write_manifest
 from src.ingestion.source_inventory import CorpusValidationError, discover_sources
+from src.observability import trace_component
 from src.retrieval.vector_store import FinancialVectorStore
 
 
@@ -47,7 +48,11 @@ def print_inventory(inventory) -> None:
 
 
 def main() -> int:
-    args = parse_args()
+    return _run_index_build(parse_args())
+
+
+@trace_component("finrag.ingestion.index_build", root=True)
+def _run_index_build(args: argparse.Namespace) -> int:
     inventory = discover_sources(
         args.data_dir, require_complete=args.require_complete_corpus
     )

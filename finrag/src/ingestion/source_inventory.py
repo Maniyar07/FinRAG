@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.constants import DOC_TYPES, SUPPORTED_EXTENSIONS, TICKERS, YEARS
+from src.observability import trace_component
 from src.schemas import SourceFile
 
 
@@ -64,6 +65,7 @@ def identify_source(path: Path) -> SourceFile:
     return SourceFile(path=path, ticker=ticker, fiscal_year=year, doc_type=doc_type)
 
 
+@trace_component("finrag.ingestion.source_inventory")
 def discover_sources(root: str | Path, *, require_complete: bool = False) -> CorpusInventory:
     data_root = Path(root).resolve()
     if not data_root.is_dir():

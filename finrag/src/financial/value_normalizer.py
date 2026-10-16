@@ -68,7 +68,7 @@ def _presented_currency(text: str) -> str | None:
 
 
 def _currency_from(candidate: CandidateFinancialFact, text: str) -> str | None:
-    declared = candidate.currency.upper() if candidate.currency else None
+    declared = candidate.currency.upper() if candidate.currency else _presented_currency(candidate.unit or "")
     presented = _presented_currency(text)
     if declared and presented and declared != presented:
         raise ValueNormalizationError("declared currency conflicts with the presented value")
@@ -88,7 +88,7 @@ def _value_type(candidate: CandidateFinancialFact, text: str, currency: str | No
         return ValueType.RATIO
     if currency:
         return ValueType.CURRENCY
-    if "count" in hint or "shares" in hint:
+    if "count" in hint or "shares" in hint or re.search(r"\bunits?\b", hint):
         return ValueType.COUNT
     return ValueType.NUMBER
 
@@ -96,10 +96,17 @@ def _value_type(candidate: CandidateFinancialFact, text: str, currency: str | No
 class FinancialValueNormalizer:
     """Convert one presented value into an exact Decimal and canonical base value."""
 
-    def normalize(self, candidate: CandidateFinancialFact) -> NormalizedFinancialValue:
+    def normalize(
+        self, candidate: CandidateFinancialFact, *, prefer_presented_scale: bool = False,
+    ) -> NormalizedFinancialValue:
         raw = _clean(candidate.raw_value)
         if raw.casefold() in NULL_VALUES:
             raise ValueNormalizationError("value is blank or not numerically meaningful")
+
+        # Evidence validation may reconcile model metadata with an explicit scale
+        # copied from the source. A bare table cell still needs declared metadata.
+        if prefer_presented_scale and (presented_scale := _recognized_scale(raw)):
+            candidate = candidate.model_copy(update={"scale": presented_scale})
 
         currency = _currency_from(candidate, raw)
         value_type = _value_type(candidate, raw, currency)

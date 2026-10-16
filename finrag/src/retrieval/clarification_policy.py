@@ -42,10 +42,11 @@ def _document_scope(understanding: QueryUnderstanding, current: Scope) -> tuple[
 def merge_clarification_reply(
     pending: PendingClarification,
     reply: str,
+    *, available_keys=None,
 ) -> ClarificationTurn | None:
     """Merge a short scope reply, or return ``None`` for a new substantive query."""
 
-    reply_understanding = understand_query(reply)
+    reply_understanding = understand_query(reply, available_keys=available_keys)
     normalized = reply.strip()
     affirmative = bool(AFFIRM_RE.search(normalized))
     negative = bool(DENY_RE.search(normalized))
@@ -76,7 +77,7 @@ def merge_clarification_reply(
     doc_type, required_doc_types = _document_scope(
         reply_understanding, pending.scope
     )
-    original = understand_query(pending.original_question)
+    original = understand_query(pending.original_question, available_keys=available_keys)
     scope_values_changed = bool(
         reply_understanding.tickers or reply_understanding.years
     )

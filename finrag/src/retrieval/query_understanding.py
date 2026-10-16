@@ -4,6 +4,7 @@ import re
 from datetime import date
 
 from src.constants import TICKER_ALIASES, TICKERS, YEARS
+from src.observability import trace_component
 from src.schemas import QueryUnderstanding
 
 
@@ -15,7 +16,7 @@ ALL_TICKER_RE = re.compile(
     re.IGNORECASE,
 )
 ALL_YEAR_RE = re.compile(
-    r"\ball\s+(?:available\s+)?years\b|\b2024\s+(?:and|&)\s+2025\b",
+    r"\ball\s+(?:available\s+)?years\b",
     re.IGNORECASE,
 )
 COMPARISON_RE = re.compile(
@@ -109,7 +110,7 @@ TABLE_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 COMPLETE_TABLE_RE = re.compile(
-    r"\b(complete|full|entire|whole)\b.{0,50}\b(table|statement|data)\b|"
+    r"\b(exact|complete|full|entire|whole)\b.{0,50}\b(table|statement|data)\b|"
     r"\b(all\s+(?:rows|columns|entries|data))\b",
     re.IGNORECASE,
 )
@@ -122,6 +123,10 @@ FINANCIAL_STATEMENT_RE = re.compile(
 DISPLAY_VERB_RE = re.compile(r"\b(show|give|provide|display|present|list)\b", re.IGNORECASE)
 TABULAR_DISPLAY_RE = re.compile(
     r"\b(show|give|provide|display|present)\b.{0,60}\b(tabular|table)\b",
+    re.IGNORECASE,
+)
+SOURCE_TABLE_RE = re.compile(
+    r"\b(?:table|schedule)\s+(?:from|in|of|for|showing|describing|related)\b",
     re.IGNORECASE,
 )
 TABLE_PROJECTION_RE = re.compile(
@@ -176,12 +181,12 @@ def _paired_groups(
         return ()
     year_positions = [
         (match.start(), match.group())
-        for match in re.finditer(r"\b(?:2024|2025)\b", text)
+        for match in re.finditer(r"\b(?:19|20)\d{2}\b", text)
     ]
     pairs_with_position: list[tuple[int, str, str]] = []
     for ticker in tickers:
         spans = []
-        for alias in TICKER_ALIASES[ticker]:
+        for alias in TICKER_ALIASES.get(ticker, (ticker,)):
             spans.extend(
                 match.span()
                 for match in re.finditer(
@@ -213,8 +218,9 @@ def _document_years(text: str) -> tuple[str, ...]:
     """
     year = r"(?P<year>(?:19|20)\d{2})"
     document = (
+        r"(?:(?:annual|quarterly)\s+)?(?:"
         r"(?:form\s+)?\d{1,2}\s*-\s*[a-z](?:s|'s)?|annual reports?|sec filings?|"
-        r"earnings transcripts?|earnings[- ]calls?|conference[- ]calls?|transcripts?"
+        r"earnings transcripts?|earnings[- ]calls?|conference[- ]calls?|transcripts?)"
     )
     patterns = (
         re.compile(rf"\b{year}\s+(?:{document})\b", re.IGNORECASE),
@@ -244,32 +250,35 @@ def _document_years(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for _, value in sorted(matches)))
 
 
-def understand_query(query: str) -> QueryUnderstanding:
+@trace_component("finrag.query_understanding")
+def understand_query(query: str, *, available_keys=None) -> QueryUnderstanding:
     normalized = normalize_query_text(query)
     upper = normalized.upper()
+    supported_tickers = tuple(sorted({key[0] for key in available_keys})) if available_keys is not None else TICKERS
+    supported_years = {key[1] for key in available_keys} if available_keys is not None else set(YEARS)
 
     tickers = tuple(
         ticker
-        for ticker in TICKERS
-        if any(_contains_alias(upper, alias) for alias in TICKER_ALIASES[ticker])
+        for ticker in supported_tickers
+        if any(_contains_alias(upper, alias) for alias in TICKER_ALIASES.get(ticker, (ticker,)))
     )
     mentioned_years = tuple(dict.fromkeys(re.findall(r"\b(?:19|20)\d{2}\b", normalized)))
     if not mentioned_years and re.search(r"\blast year\b", normalized, re.IGNORECASE):
         mentioned_years = (str(date.today().year - 1),)
     source_years = _document_years(normalized)
     if source_years:
-        years = tuple(year for year in source_years if year in YEARS)
-        unsupported_years = tuple(year for year in source_years if year not in YEARS)
+        years = tuple(year for year in source_years if year in supported_years)
+        unsupported_years = tuple(year for year in source_years if year not in supported_years)
         reference_years = tuple(year for year in mentioned_years if year not in source_years)
     else:
-        years = tuple(year for year in mentioned_years if year in YEARS)
-        unsupported_years = tuple(year for year in mentioned_years if year not in YEARS)
+        years = tuple(year for year in mentioned_years if year in supported_years)
+        unsupported_years = tuple(year for year in mentioned_years if year not in supported_years)
         reference_years = ()
 
     unsupported_companies = tuple(
         ticker
         for ticker, aliases in UNSUPPORTED_COMPANIES.items()
-        if any(_contains_alias(upper, alias) for alias in aliases)
+        if ticker not in supported_tickers and any(_contains_alias(upper, alias) for alias in aliases)
     )
     requested_groups = _paired_groups(upper, tickers, years)
 
@@ -280,8 +289,8 @@ def understand_query(query: str) -> QueryUnderstanding:
         and bool(MIXED_EVIDENCE_RE.search(normalized))
     )
     if mixed_evidence_signal:
-        years = tuple(year for year in mentioned_years if year in YEARS)
-        unsupported_years = tuple(year for year in mentioned_years if year not in YEARS)
+        years = tuple(year for year in mentioned_years if year in supported_years)
+        unsupported_years = tuple(year for year in mentioned_years if year not in supported_years)
         reference_years = ()
         requested_groups = _paired_groups(upper, tickers, years)
     sec_form_types = tuple(
@@ -325,15 +334,13 @@ def understand_query(query: str) -> QueryUnderstanding:
     statement_display_request = bool(DISPLAY_VERB_RE.search(normalized)) and bool(
         FINANCIAL_STATEMENT_RE.search(normalized)
     )
-    tabular_display_request = bool(TABULAR_DISPLAY_RE.search(normalized))
+    source_table_request = bool(SOURCE_TABLE_RE.search(normalized))
     projected_table_request = bool(TABLE_PROJECTION_RE.search(normalized))
     wants_table = bool(TABLE_OUTPUT_RE.search(normalized)) or statement_display_request
     wants_complete_table = wants_table and (
         bool(COMPLETE_TABLE_RE.search(normalized))
-        or (
-            (statement_display_request or tabular_display_request)
-            and not projected_table_request
-        )
+        or (statement_display_request and not projected_table_request)
+        or source_table_request
     )
 
     return QueryUnderstanding(

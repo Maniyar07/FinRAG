@@ -10,7 +10,7 @@ import json
 import re
 from collections.abc import Collection
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Annotated, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -22,12 +22,13 @@ from src.config import (
 )
 from src.constants import COMPANY_NAMES, DOC_TYPES, TICKER_ALIASES, TICKERS, YEARS
 from src.generation.llm_engine import get_llm_engine
+from src.observability import trace_component
 from src.schemas import Decision, QueryUnderstanding, Scope, ScopeResolution
 
 
 RelativePeriod = Literal["none", "earlier", "later", "previous"]
 ClarificationField = Literal["company", "year", "comparison years", "document type"]
-SupportedTicker = Literal["JPM", "MSFT", "TSLA"]
+SupportedTicker = Annotated[str, Field(pattern=r"^[A-Z0-9.]{1,10}$")]
 
 RELATIVE_PERIOD_RE = re.compile(
     r"\b(earlier|later|previous|prior)\s+(?:fiscal\s+)?(?:year|period)\b",
@@ -152,6 +153,7 @@ class SemanticQueryParser:
             sort_keys=True,
         )
 
+    @trace_component("finrag.semantic_query_parse")
     def parse(
         self,
         *,
@@ -166,19 +168,15 @@ class SemanticQueryParser:
             available_years = YEARS
             available_doc_types = DOC_TYPES
         else:
-            available_tickers = tuple(
-                ticker for ticker in TICKERS if any(key[0] == ticker for key in keys)
-            )
-            available_years = tuple(
-                year for year in YEARS if any(key[1] == year for key in keys)
-            )
+            available_tickers = tuple(sorted({key[0] for key in keys}))
+            available_years = tuple(sorted({key[1] for key in keys}))
             available_doc_types = tuple(
                 value for value in DOC_TYPES if any(key[2] == value for key in keys)
             )
         payload = self.chain.invoke(
             {
                 "companies": ", ".join(
-                    f"{ticker} = {COMPANY_NAMES[ticker]}"
+                    f"{ticker} = {COMPANY_NAMES.get(ticker, ticker)}"
                     for ticker in available_tickers
                 ),
                 "years": ", ".join(available_years),
@@ -404,17 +402,17 @@ def semantic_clarification_message(
     fields = set(application.ambiguous_fields)
     if "company" in fields and application.candidate_tickers:
         labels = " or ".join(
-            f"{COMPANY_NAMES[ticker]} ({ticker})"
+            f"{COMPANY_NAMES.get(ticker, ticker)} ({ticker})"
             for ticker in application.candidate_tickers
         )
         parts.append(f"By the company description, do you mean {labels}?")
         fields.remove("company")
     if "company" in fields:
-        parts.append("Please specify the company (JPM, MSFT, or TSLA).")
+        parts.append("Please specify an indexed company ticker.")
     if "comparison years" in fields:
-        parts.append("Please specify which years should be compared (2024 and/or 2025).")
+        parts.append("Please specify which indexed source years should be compared.")
     elif "year" in fields:
-        parts.append("Please specify the year (2024 or 2025).")
+        parts.append("Please specify the source year.")
     if "document type" in fields:
         parts.append("Please choose the 10-K, transcript, or both.")
     return " ".join(parts) or fallback_message

@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Collection
 
 from src.constants import TICKERS, YEARS
+from src.observability import trace_component
 from src.schemas import Decision, QueryUnderstanding, Scope, ScopeResolution
 
 
 OUT_OF_SCOPE_MESSAGE = (
-    "This assistant is limited to the uploaded 2024-2025 SEC 10-K reports and "
-    "Q4 earnings transcripts for JPM, MSFT, and TSLA. It cannot answer that request "
+    "This assistant is limited to the uploaded financial reports and "
+    "earnings transcripts. It cannot answer that request "
     "from this document collection."
 )
 
@@ -73,6 +74,7 @@ def _has_document_type_ambiguity(
     )
 
 
+@trace_component("finrag.scope_resolution")
 def resolve_scope(
     understanding: QueryUnderstanding,
     *,
@@ -105,8 +107,10 @@ def resolve_scope(
     ):
         return ScopeResolution(Decision.OUT_OF_SCOPE, Scope(), OUT_OF_SCOPE_MESSAGE)
 
-    query_tickers = tuple(TICKERS) if understanding.all_tickers else understanding.tickers
-    query_years = tuple(YEARS) if understanding.all_years else understanding.years
+    available_tickers = tuple(sorted({key[0] for key in available_keys})) if available_keys is not None else TICKERS
+    available_years = tuple(sorted({key[1] for key in available_keys})) if available_keys is not None else YEARS
+    query_tickers = available_tickers if understanding.all_tickers else understanding.tickers
+    query_years = available_years if understanding.all_years else understanding.years
 
     if ui.tickers and query_tickers and set(ui.tickers) != set(query_tickers):
         return ScopeResolution(
@@ -210,9 +214,9 @@ def resolve_scope(
     )
     missing_fields = []
     if not scope.tickers:
-        missing_fields.append("company (JPM, MSFT, or TSLA)")
+        missing_fields.append("company (" + ", ".join(available_tickers) + ")")
     if not scope.years:
-        missing_fields.append("year (2024 or 2025)")
+        missing_fields.append("year (" + ", ".join(available_years) + ")")
     if missing_fields:
         return ScopeResolution(
             Decision.CLARIFY,

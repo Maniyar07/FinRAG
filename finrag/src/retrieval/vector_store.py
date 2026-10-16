@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import atexit
+import httpx
 from typing import Any
 
 from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
+from src.telemetry import record_embedding_response
+from src.request_runtime import check_request
 
 from src.config import (
     COLLECTION_NAME,
     EMBEDDING_DIMENSIONS,
     EMBEDDING_MODEL,
     OPENAI_API_KEY,
+    OPENAI_MAX_RETRIES,
+    OPENAI_REQUEST_TIMEOUT_SECONDS,
     get_index_paths,
     validate_runtime_config,
 )
@@ -36,13 +41,18 @@ class FinancialVectorStore:
                 f"Index '{self.index_paths.version}' does not exist. Run ingestion first."
             )
         self.index_paths.qdrant_dir.mkdir(parents=True, exist_ok=True)
-        self.embeddings = OpenAIEmbeddings(
-            model=EMBEDDING_MODEL,
-            dimensions=EMBEDDING_DIMENSIONS,
-            api_key=OPENAI_API_KEY,
-        )
-
+        self._embedding_http = httpx.Client(event_hooks={
+            "request": [lambda request: check_request()], "response": [record_embedding_response],
+        })
         try:
+            self.embeddings = OpenAIEmbeddings(
+                model=EMBEDDING_MODEL,
+                dimensions=EMBEDDING_DIMENSIONS,
+                api_key=OPENAI_API_KEY,
+                request_timeout=OPENAI_REQUEST_TIMEOUT_SECONDS,
+                max_retries=OPENAI_MAX_RETRIES,
+                http_client=self._embedding_http,
+            )
             self.client = QdrantClient(path=str(self.index_paths.qdrant_dir))
             names = {item.name for item in self.client.get_collections().collections}
             exists = self.collection_name in names
@@ -92,6 +102,9 @@ class FinancialVectorStore:
             client=self.client,
             collection_name=self.collection_name,
             embedding=self.embeddings,
+            # `_validate_schema` already checks vector size and distance.
+            # The adapter's duplicate check embeds dummy text through OpenAI.
+            validate_collection_config=False,
         )
 
     def point_count(self) -> int:
@@ -102,6 +115,10 @@ class FinancialVectorStore:
         )
 
     def close(self) -> None:
+        embedding_http = getattr(self, "_embedding_http", None)
+        if embedding_http is not None:
+            embedding_http.close()
+            self._embedding_http = None
         client = self.client
         if client is None:
             return

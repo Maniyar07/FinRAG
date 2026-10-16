@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
-from src.config import COMPRESSION_ENABLED, COMPRESSION_KEEP_BLOCKS
+from src.config import COMPRESSION_ENABLED, COMPRESSION_KEEP_BLOCKS, MAX_CONTEXT_TOKENS
 from src.ingestion.parent_store import ParentStore
-from src.retrieval.compression import compress
+from src.retrieval.compression import compress, compress_to_budget
+from src.retrieval.token_budget import count_tokens, token_counter_name
+from src.observability import trace_component
 from src.schemas import RankedChild, RetrievalBundle, Scope
 
 
@@ -148,6 +150,7 @@ class ContextBuilder:
                 break
         return selected, best
 
+    @trace_component("finrag.retrieval.context_build")
     def build(
         self,
         ranked_children: list[RankedChild],
@@ -155,40 +158,124 @@ class ContextBuilder:
         *,
         max_parents: int,
         max_chars: int,
+        max_tokens: int = MAX_CONTEXT_TOKENS,
         query: str = "",
         preserve_all: bool = False,
+        exclude_parent_ids: frozenset[str] = frozenset(),
     ) -> RetrievalBundle:
-        parent_ids, best = self._select_parent_ids(ranked_children, scope, max_parents)
+        parent_ids, best = self._select_parent_ids(
+            ranked_children, scope, len(ranked_children)
+        )
+        selected_before_exclusions = len(parent_ids)
+        excluded_count = sum(
+            parent_id in exclude_parent_ids for parent_id in parent_ids
+        )
+        parent_ids = [
+            parent_id
+            for parent_id in parent_ids
+            if parent_id not in exclude_parent_ids
+        ]
         parents = self.parent_store.get_many(parent_ids)
+        children_by_parent: dict[str, set[str]] = defaultdict(set)
+        for child in ranked_children:
+            children_by_parent[child.parent_id].add(child.child_id)
         context_parts: list[str] = []
         sources: list[dict] = []
-        used_chars = 0
+        attempts: list[dict[str, object]] = []
 
         for parent_id, parent in zip(parent_ids, parents):
+            if len(sources) >= max_parents:
+                break
             if parent is None:
+                attempts.append(
+                    {"parent_id": parent_id, "outcome": "skipped_missing_parent"}
+                )
                 continue
             source_id = f"S{len(sources) + 1}"
             header = _source_header(source_id, parent.metadata)
-            body = parent.page_content.strip()
+            full_body = parent.page_content.strip()
+            keep_parent_whole = preserve_all or len(children_by_parent[parent_id]) > 1
+            body = full_body
             stats = {}
             if COMPRESSION_ENABLED and query:
                 body, stats = compress(
                     body,
                     query,
                     keep_blocks=COMPRESSION_KEEP_BLOCKS,
-                    preserve_all=preserve_all,
+                    preserve_all=keep_parent_whole,
                 )
             block = f"{header}\n{body}"
-            if used_chars + len(block) > max_chars:
-                continue
+            candidate_context = "\n\n---\n\n".join((*context_parts, block))
+            initial_chars = len(candidate_context)
+            initial_tokens = count_tokens(candidate_context)
+            evidence_mode = (
+                "full_parent" if body == full_body else "compressed_parent"
+            )
+            if initial_chars > max_chars or initial_tokens > max_tokens:
+                if keep_parent_whole:
+                    attempts.append({"parent_id": parent_id, "outcome": "skipped_full_parent_budget",
+                                     "required_chars": initial_chars, "required_tokens": initial_tokens})
+                    continue
+                existing = "\n\n---\n\n".join(context_parts)
+                separator = "\n\n---\n\n" if existing else ""
+                prefix = f"{existing}{separator}{header}\n"
+                focused, focused_stats = compress_to_budget(
+                    full_body,
+                    query,
+                    max_chars=max_chars - len(prefix),
+                    max_tokens=max_tokens - count_tokens(prefix),
+                    keep_blocks=COMPRESSION_KEEP_BLOCKS,
+                )
+                if focused:
+                    focused_block = f"{header}\n{focused}"
+                    focused_context = "\n\n---\n\n".join(
+                        (*context_parts, focused_block)
+                    )
+                    if (
+                        len(focused_context) <= max_chars
+                        and count_tokens(focused_context) <= max_tokens
+                    ):
+                        body = focused
+                        stats = focused_stats
+                        block = focused_block
+                        candidate_context = focused_context
+                        evidence_mode = "budget_excerpt"
+                if (
+                    len(candidate_context) > max_chars
+                    or count_tokens(candidate_context) > max_tokens
+                ):
+                    attempts.append(
+                        {
+                            "parent_id": parent_id,
+                            "ticker": parent.metadata.get("ticker"),
+                            "fiscal_year": parent.metadata.get("fiscal_year"),
+                            "outcome": "skipped_no_evidence_fit",
+                            "initial_chars": initial_chars,
+                            "initial_tokens": initial_tokens,
+                            "compression_status": stats.get("status"),
+                            "budget_excerpt_status": focused_stats.get("status"),
+                        }
+                    )
+                    continue
             context_parts.append(block)
-            used_chars += len(block)
             child = best[parent_id]
+            attempts.append(
+                {
+                    "parent_id": parent_id,
+                    "ticker": parent.metadata.get("ticker"),
+                    "fiscal_year": parent.metadata.get("fiscal_year"),
+                    "outcome": "selected",
+                    "evidence_mode": evidence_mode,
+                    "context_chars_after": len(candidate_context),
+                    "context_tokens_after": count_tokens(candidate_context),
+                    "compression_status": stats.get("status"),
+                }
+            )
             sources.append(
                 {
                     "id": source_id,
                     "evidence_text": body,
-                    "full_evidence_text": parent.page_content.strip(),
+                    "full_evidence_text": full_body,
                     "compression": stats,
                     "rerank_applied": bool(
                         child.metadata.get("rerank_applied")
@@ -209,6 +296,8 @@ class ContextBuilder:
                         child.metadata.get("pre_rerank_score")
                     ),
                     "parent_id": parent_id,
+                    "parent_complete": body == full_body,
+                    "evidence_mode": evidence_mode,
                     "score": round(child.fused_score, 4),
                     "dense_score": (
                         round(child.dense_score, 4)
@@ -243,12 +332,30 @@ class ContextBuilder:
                 {(str(item["ticker"]), str(item["fiscal_year"])) for item in sources}
             )
         )
+        context = "\n\n---\n\n".join(context_parts)
+        diagnostics = {
+            "token_counter": token_counter_name(),
+            "budget": {
+                "max_parents": max_parents,
+                "max_chars": max_chars,
+                "max_tokens": max_tokens,
+            },
+            "ranked_child_count": len(ranked_children),
+            "unique_parent_count": selected_before_exclusions,
+            "excluded_parent_count": excluded_count,
+            "attempted_parent_count": len(attempts),
+            "selected_source_count": len(sources),
+            "final_context_chars": len(context),
+            "final_context_tokens": count_tokens(context),
+            "covered_groups": [list(group) for group in covered],
+            "parent_attempts": attempts,
+        }
         return RetrievalBundle(
-
-            context="\n\n---\n\n".join(context_parts),
+            context=context,
             sources=sources,
             scope=scope,
             candidate_count=len(ranked_children),
             covered_groups=covered,
-            
+            context_tokens=count_tokens(context),
+            diagnostics=diagnostics,
         )

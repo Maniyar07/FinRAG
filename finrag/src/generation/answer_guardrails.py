@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from src.observability import trace_component
 from src.schemas import RetrievalBundle, Scope
 
 
@@ -42,6 +43,8 @@ def normalize_citations(answer: str) -> str:
         source_id = next(group for group in match.groups() if group)
         return f"[{source_id.upper()}]"
 
+    nested = re.compile(r"(?:\[\s*){2,}(S\d+)(?:\s*\]){2,}", re.IGNORECASE)
+    answer = nested.sub(lambda match: f"[{match.group(1).upper()}]", answer)
     return CITATION_VARIANT_RE.sub(replacement, answer)
 
 
@@ -159,6 +162,7 @@ def missing_comparison_groups(bundle: RetrievalBundle) -> tuple[tuple[str, ...],
     return tuple(sorted(required - covered))
 
 
+@trace_component("finrag.answer_validation")
 def validate_answer_payload(
     answer: str,
     sources: list[dict],
