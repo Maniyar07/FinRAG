@@ -23,6 +23,7 @@ when retrieval is weak.
 ## Contents
 
 - [Manager presentation and project walkthrough](PROJECT_WALKTHROUGH.md)
+- [Version 2 technical design](TECHNICAL_DESIGN_DOCUMENT_V2.md)
 - [Highlights](#highlights)
 - [Bundled corpus and indexes](#bundled-corpus-and-indexes)
 - [Quick start](#quick-start)
@@ -31,6 +32,7 @@ when retrieval is weak.
 - [Adding documents and building an index](#adding-documents-and-building-an-index)
 - [API](#api)
 - [Configuration](#configuration)
+- [Observability](OBSERVABILITY.md)
 - [Project structure](#project-structure)
 - [Testing and evaluation](#testing-and-evaluation)
 - [Troubleshooting](#troubleshooting)
@@ -403,16 +405,22 @@ Full request/response behavior is documented in
 | `FINRAG_INDEX_VERSION` | Yes | empty | Active index for Streamlit and default API index |
 | `FINRAG_API_INDEX_VERSIONS` | API | active index | Comma-separated allowlist of indexes loaded by FastAPI |
 | `FINRAG_LLM_MODEL` | No | `gpt-4o-mini` | Answer-generation model |
+| `FINRAG_AGENT_MAX_ACTIONS` | No | `8` | LangGraph model/tool turn budget |
 | `FINRAG_SEMANTIC_FALLBACK_ENABLED` | No | `false` | Enable bounded semantic clarification for unresolved/suspicious queries |
 | `FINRAG_SEMANTIC_FALLBACK_MODEL` | No | answer model | Structured semantic-parser model |
 | `FINRAG_SEMANTIC_FALLBACK_TIMEOUT_SECONDS` | No | `10` | Maximum semantic-parser request time |
-| `FINRAG_MULTIHOP_ENABLED` | No | `false` | Enable bounded planning for compound comparison questions |
-| `FINRAG_MULTIHOP_MAX_SEARCHES` | No | `4` | Maximum focused document searches in one plan |
-| `FINRAG_MULTIHOP_MAX_CALCULATIONS` | No | `6` | Maximum deterministic calculations in one plan |
 | `FINRAG_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model; must match the index manifest |
 | `FINRAG_EMBEDDING_DIMENSIONS` | No | `1536` | Vector size; must match the index manifest |
 | `FINRAG_DEBUG_TRACES` | No | `false` | Enables UI diagnostics and allows sanitized API traces |
+| `LANGSMITH_TRACING` | No | `false` | Enables LangChain, LangGraph, and named FinRAG spans in LangSmith |
+| `LANGSMITH_API_KEY` | When tracing | - | LangSmith authentication; keep it in `.env` or deployment secrets |
+| `LANGSMITH_PROJECT` | No | `FinRAG` | LangSmith project that receives runs |
+| `LANGSMITH_ENDPOINT` | No | SDK default | Optional regional or self-hosted LangSmith endpoint |
 | `FINRAG_CORS_ORIGINS` | No | empty | Exact comma-separated origins for a separate trusted frontend |
+
+See [Observability](OBSERVABILITY.md) for trace contents, pipeline spans, and a
+debugging workflow. `FINRAG_DEBUG_TRACES` controls local/UI diagnostics; it is
+independent of LangSmith tracing.
 
 ### Retrieval controls
 
@@ -422,6 +430,9 @@ Full request/response behavior is documented in
 | `FINRAG_LEXICAL_CANDIDATE_K` | `48` | Lexical candidates before fusion |
 | `FINRAG_MAX_CONTEXT_PARENTS` | `8` | Maximum parent records in the model context |
 | `FINRAG_MAX_CONTEXT_CHARS` | `48000` | Maximum context size in characters |
+| `FINRAG_MAX_CONTEXT_TOKENS` | `12000` | Request-wide evidence context limit, divided across locked source groups |
+| `FINRAG_MAX_CONCURRENT_REQUESTS` | `4` | Concurrent API workers, including work still stopping after disconnect |
+| `FINRAG_REQUEST_DEADLINE_SECONDS` | `120` | Request deadline, including queue time |
 | `FINRAG_MIN_DENSE_SCORE` | `0.20` | Minimum accepted dense score |
 | `FINRAG_MIN_LEXICAL_COVERAGE` | `0.20` | Minimum accepted lexical query coverage |
 | `FINRAG_COMPRESSION_ENABLED` | `true` | Enable extractive parent compression |
@@ -456,87 +467,49 @@ and document type without losing earlier fields; retrieval and answer generation
 continue to use the original financial question. A new substantive question or a
 filter change clears the pending state.
 
-### Official LangChain ReAct agent for multi-hop questions
+### LangGraph financial agent
 
-Multi-hop orchestration is disabled by default so an existing deployment keeps its
-current latency and model-call profile. Enable it after running the test suite and a
-representative evaluation against the active index:
+After deterministic scope resolution, every in-scope request runs through the
+compiled graph in `src/agent/graph.py`. It uses the hybrid retriever and validated
+financial calculator already used by the application. The graph exposes a strict
+request planner, three scope-bound evidence and calculation tools, and a finalizer:
+`plan_financial_request`, `search_financial_documents`, `financial_calculator`,
+`get_financial_statement`, and `finalize_financial_answer`. The plan separates filing source year from the
+reported period, and searches require a validated plan for every locked source
+group. Searches return cited context and validated fact IDs; calculations accept
+those IDs rather than model-generated numbers.
+The finalizer checks every planned requirement and calculation, renders numbers
+from validated facts/results, audits narrative excerpts, and identifies partial
+answers explicitly. It permits one evidence-grounded repair.
+`FINRAG_AGENT_MAX_ACTIONS` limits the graph's model/tool turns.
 
-Financial formulas are defined declaratively in
-`src/financial/formula_definitions.json`. The generic compiler turns a matched
-formula expression into scope-bound numeric evidence requirements and an ordered
-calculation graph. The initial catalog covers margins, cash flow, liquidity,
-leverage, returns, efficiency, per-share metrics, and common growth calculations.
-New formulas normally require only a catalog entry composed from approved calculator
-operations; they do not require a new query-routing branch. Every expression leaf is
-still bound to a validated fact from the selected 10-K before arithmetic runs.
+Retrieval has a request-wide parent, character, and token budget split over the
+planned source groups. `FINRAG_MAX_CONTEXT_TOKENS` defaults to 12,000 evidence
+tokens. Parents with multiple matched children or requested metrics are preserved
+whole or skipped with diagnostics. Single-child metric queries may use complete
+evidence blocks within the budget. Repeated complete parents are excluded from
+refinement searches; missing requirements permit one focused recovery. Full
+evidence remains in state, while satisfied numeric context is omitted from later
+model input. Tiktoken is used when its vocabulary is cached locally;
+otherwise a conservative UTF-8 byte upper bound keeps the budget functional
+without a runtime network fetch.
 
-```dotenv
-FINRAG_MULTIHOP_ENABLED=true
-FINRAG_AGENT_BACKEND=langchain
-FINRAG_AGENT_MAX_ACTIONS=8
-FINRAG_AGENT_TIMEOUT_SECONDS=30
-FINRAG_MULTIHOP_MAX_SEARCHES=4
-FINRAG_MULTIHOP_MAX_CALCULATIONS=6
-```
+The application handles clarification, unsupported-company checks, and unavailable
+source years before invoking the graph. The graph cannot widen that resolved scope,
+access the web, or execute arbitrary code. Tool calls, sources, validated facts,
+calculator results, and errors are recorded in the request trace.
 
-When enabled, simple questions and complete-table requests retain the optimized
-single-hop path. Questions requesting arithmetic or multiple tasks can use the
-official `langchain.agents.create_agent` model/tool loop. Each request receives two
-scope-bound business tools, `search_financial_documents` and `financial_calculator`,
-plus a control-only `complete_research` terminal tool. The
-search tool delegates to the existing multi-hop executor, so hybrid retrieval,
-reranking, compression, fact validation, and citation handling are reused rather
-than duplicated. The calculator accepts only validated fact IDs returned by search.
-The agent cannot widen the resolved scope, access the web, execute code, or calculate
-from arbitrary model text. The trace records tool actions and compact observations,
-not hidden model reasoning.
+`src/financial/formula_definitions.json` and `formula_registry.py` remain as
+financial-domain data, but the current LangGraph tools do not compile that catalog
+into multi-step formulas. The active calculator supports its declared operations
+over validated facts; catalog-driven formula execution remains a migration item.
 
-`FINRAG_AGENT_BACKEND=bounded` keeps the previous typed planner/executor workflow as
-a rollback path during evaluation. Do not delete it until the LangChain backend has
-passed the same regression and representative-query evaluation set.
-
-Each evidence requirement searches one document type across exact company/year
-groups. An exact indexed statement row is used when it completely satisfies a
-numeric requirement; other evidence actions use the existing dense + BM25 + RRF
-pipeline, optional Cohere reranking, parent retrieval, and context compression.
-Calculation actions accept only validated fact IDs. The configured search and
-calculation limits form the agent's hard action budget.
-Numeric requirements pass through extraction, normalization, and deterministic
-source validation; calculations accept only validated fact IDs. Evidence from all
-searches is deduplicated and assigned globally unique `S#` IDs. For calculated
-comparisons, the application formats validated figures and arithmetic itself;
-short narrative passages are included only when they match the cited source
-verbatim. Missing groups, ambiguous facts, or unavailable calculations fail
-closed. If only the requested explanation is unsupported, the response keeps
-the verified calculations and explicitly marks the explanation incomplete.
-
-Primary-statement HTML rows already in the parent chunks can recover omitted
-numeric facts. Consolidated totals take precedence over segment rows, and a
-verified table row takes precedence over inconsistent model-supplied metadata.
-
-Run the five indexed comparison checks with:
-
-```powershell
-.\.venv\Scripts\python.exe evals\smoke_multihop.py --verdict
-```
-
-This uses the existing parent chunks, including embedded Markdown/HTML tables. It
-does not require re-ingestion, SQLite, a separate table index, or a table-search tool.
-
-Complete named tables and 10-K item lists use a smaller direct path: after scope
-resolution, the app scans matching indexed parent records for a table heading
-matching the requested subject, or derives the item list from metadata. The
-matching full structure is displayed with source links. When no matching full
-structure is available, the question continues through hybrid search, optional
-reranking, compression, and generation.
-For a single 10-K filing, reported figures in statement rows are read from the
-indexed row and year column and supplied to generation with their source. A
-generated amount that conflicts with these verified cells is retried and then
-withheld if still wrong. Multi-hop calculations use the same indexed rows as a
-fallback when ranked search misses a required statement parent.
-LangGraph is not needed for this bounded routing; adding it would not change the
-retrieved evidence or repair a truncated source table.
+Complete table requests use the graph's statement lookup tool over indexed filing
+content. Tables are rendered from indexed HTML with row/column span handling and
+explicit column/row completeness checks. Completeness refers to the selected
+indexed table, not the original PDF. Unavailable evidence produces a partial
+answer or validation failure. See [the implementation notes](REMAINING_FIXES.md)
+for runtime controls, usage tracking, and validation limits.
 
 ### Optional Cohere reranking
 
@@ -567,7 +540,8 @@ finrag/
 │   ├── app.js                     chat, filters, history, SSE, evidence UI
 │   └── styles.css                 responsive light/dark presentation
 ├── src/
-│   ├── app/chat_service.py        end-to-end policy/retrieval/generation orchestration
+│   ├── agent/                     LangGraph graph, prompts, and strict tools
+│   ├── app/chat_service.py        scope policy, graph invocation, and traces
 │   ├── generation/                prompts, LLM, citations, output guardrails
 │   ├── ingestion/                 inventory, loaders, cache, chunking, stores
 │   ├── retrieval/                 query scope, hybrid search, reranking, context
@@ -686,10 +660,10 @@ fiscal year, and evidence basis explicit.
   a worker thread.
 - Local browser history and theme preferences live in `localStorage`; the backend
   does not provide user accounts or persistent conversation storage.
-- Phase 1 includes one bounded, scope-locked ReAct agent for compound document
-  research. It does not include open-ended autonomous agents, SQL tools, or live
-  financial-data connectors. Its calculator is limited to validated retrieved
-  figures.
+- The LangGraph agent is scope-locked and uses validated retrieved facts for
+  calculations. It does not include open-ended autonomous agents, SQL tools, or
+  live financial-data connectors. Catalog-driven multi-step formulas remain a
+  migration item.
 - No software license is currently included in this repository. Add one before public
   redistribution.
 

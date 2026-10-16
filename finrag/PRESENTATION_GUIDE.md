@@ -2,176 +2,110 @@
 
 ## One-sentence project description
 
-FinRAG is a citation-grounded assistant for indexed 10-K filings and earnings-call
-transcripts that combines hybrid retrieval, reranking, context compression, bounded
-ReAct orchestration, multi-hop evidence gathering, and deterministic financial tools.
+FinRAG answers questions grounded in indexed 10-K filings and earnings-call transcripts using hybrid retrieval, citation-aware financial evidence, and a scope-locked LangGraph agent.
 
 ## What is implemented
 
-| Requirement | Implementation | Evidence in the project |
+| Capability | Implementation | Source |
 |---|---|---|
-| Hybrid retrieval | Dense search and BM25-style lexical search | `src/retrieval/hybrid_retriever.py` |
-| Rank fusion | Reciprocal-rank fusion before reranking | `src/retrieval/hybrid_retriever.py` |
-| Reranking | Optional Cohere reranker; failure keeps the RRF order | `src/retrieval/reranker.py` |
-| Context compression | Extractive block selection after parent retrieval | `src/retrieval/compression.py`, `context_builder.py` |
-| Tools | Scope-safe document search and deterministic calculator | `src/tools/` |
-| ReAct agent | Official LangChain model/tool loop with a hard action budget | `src/app/langchain_react_agent.py` |
-| Multi-hop RAG | Bounded evidence plan across companies, years, and document types | `src/orchestration/` |
-| Grounding | Scope, coverage, fact, calculation, and citation validation | `src/generation/`, `src/financial/` |
+| Hybrid retrieval | Dense search, lexical search, reciprocal-rank fusion | `src/retrieval/hybrid_retriever.py` |
+| Reranking | Optional Cohere reranker with fail-open RRF results | `src/retrieval/reranker.py` |
+| Context building | Parent retrieval and extractive compression | `src/retrieval/context_builder.py`, `compression.py` |
+| Agent | LangGraph ReAct loop with a recursion limit | `src/agent/graph.py` |
+| Tools | Scope-bound filing search, calculator, statement lookup | `src/agent/tools.py` |
+| Fact checks | Normalization and validation of extracted financial facts | `src/financial/` |
+| Application policy | Company/year/doc-type resolution and clarification | `src/app/chat_service.py`, `src/retrieval/scope_policy.py` |
 
-## Architecture to present
+## Architecture
 
 ```text
-User question
-    |
-    v
-Scope resolution and corpus availability check
-    |
-    +-- simple/table query --> optimized single-hop or structured lookup
-    |
-    +-- compound/calculation query --> official LangChain ReAct agent
-                                      |
-                                      +-- document_search
-                                      |      |
-                                      |      +-- dense + BM25
-                                      |      +-- RRF
-                                      |      +-- Cohere rerank or RRF fallback
-                                      |      +-- parent context + compression
-                                      |
-                                      +-- financial_calculator
-                                      |
-                                      +-- complete_research (safe terminal action)
-                                      |
-                                      +-- observe coverage and stop safely
-    |
-    v
-Grounded answer, citations, and validation
+Question
+   |
+   v
+Scope resolution and corpus availability checks
+   |
+   +--> Clarify, reject, or report unavailable scope
+   |
+   v
+LangGraph agent (scope locked)
+   |-- search_financial_documents
+   |      `-- dense + lexical -> RRF -> optional reranking -> parent context
+   |-- get_financial_statement
+   |      `-- retrieve indexed statement evidence
+   `-- financial_calculator
+          `-- calculate only from validated fact IDs
+   |
+   v
+Answer with evidence citations and tool/source trace
 ```
 
-Simple questions intentionally avoid the agent loop because one retrieval is faster
-and cheaper. The official LangChain agent is selected for arithmetic and compound
-questions where multiple evidence or calculation actions are useful. The older
-bounded workflow remains available through a feature flag until evaluation is done.
+Every in-scope question uses the LangGraph backend. The application resolves the
+allowed company, filing year, and document type before the graph can search. Tool
+schemas are strict, and search results carry source IDs and validated financial
+facts into later calculator calls.
 
-## Start the Monday demo
+## Start the demo
 
-Run these commands from the `finrag` directory:
+Run from the `finrag` directory:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000`, enable the workflow trace, and use the `phase1-v2`
-index. The current `.env` enables reranking, compression, multihop, and workflow
-traces. Do not display `.env` because it can contain API keys.
-
-For the official agent demo, confirm `FINRAG_AGENT_BACKEND=langchain` before starting
-the server. Use `bounded` as the rollback value if a regression is discovered.
+Open `http://127.0.0.1:8000` and select the `phase1-v2` index. Set
+`FINRAG_DEBUG_TRACES=true` if you want to show tool and source diagnostics. Do not
+display `.env`; it may contain API keys. There is no backend-selection or multihop
+environment flag.
 
 The bundled Qdrant index is an embedded local database and permits only one process
-to open it. Check `http://127.0.0.1:8000/api/health` first. After code changes, stop
-the existing server cleanly and start it once so it loads the new code; never start a
-second process against the same index.
+to open it. Check `/api/health` before starting the server, and stop an existing
+server cleanly before restarting it after code changes.
 
 ## Demo questions
 
-### 1. Narrative retrieval
+1. **Narrative retrieval:** Summarize Tesla's AI-related resource requirements and
+   supply-chain challenges in its 2025 10-K. Show the retrieved source and relevant
+   section.
+2. **Calculation:** Calculate Microsoft's total revenue percentage change from
+   fiscal 2024 to 2025 using its annual 10-Ks. Show the cited values and calculator
+   result.
+3. **Cross-company and cross-document:** Compare Microsoft and Tesla revenue across
+   fiscal 2024 and 2025, then summarize management's explanation from the 2025 Q4
+   transcripts. Check that every requested group is supported and cited.
 
-> According to Tesla's 2025 10-K, summarize the AI-related resource requirements and supply-chain challenges described in Item 1A.
-
-Explain the dense score, lexical score, RRF score, reranker result, compression
-statistics, and cited source. This demonstrates hybrid retrieval, reranking, and
-compression.
-
-### 2. Calculation tool
-
-> Using Microsoft's 2024 and 2025 10-K filings, calculate the percentage change in total revenue from fiscal 2024 to fiscal 2025. Show the formula and inputs.
-
-Explain that values are retrieved and validated first. The language model is not
-allowed to perform the arithmetic; the calculator receives validated fact IDs.
-
-### 3. ReAct and multi-hop RAG
-
-> Compare Microsoft and Tesla revenue for 2024 and 2025 using their 10-Ks. Calculate each company's percentage change, identify which improved more, and explain the reasons management gave in the 2025 earnings transcripts.
-
-In the workflow trace, show:
-
-1. `agent.selected = true`.
-2. `agent.framework = langchain.create_agent` and the hard action budget.
-3. Document-search actions and their source/fact observations.
-4. Calculator actions and verified results.
-5. 10-K and transcript evidence coverage.
-6. Final citations or an explicit evidence limitation.
-
-## Two-minute explanation
-
-1. The query-understanding layer resolves company, fiscal year, and document type
-   before retrieval. This prevents the agent from silently widening scope.
-2. Narrative evidence uses dense and lexical retrieval. RRF fuses both rankings,
-   and Cohere optionally reranks the fused candidates. A reranker failure returns the
-   original RRF candidates.
-3. Child chunks improve retrieval precision. Parent chunks restore context, and the
-   compressor retains relevant blocks and complete table evidence.
-4. Compound questions enter the official LangChain model/tool loop. The request-local
-   agent can call only document search, the financial calculator, and a control-only
-   completion action, and has a fixed action budget.
-5. Numeric facts preserve source, period, currency, scale, and row identity.
-   Calculations accept only validated fact IDs.
-6. The answer generator can cite only retrieved source IDs. Missing comparison groups
-   or invalid evidence produce an incomplete/abstention response instead of a guess.
+For each demo, inspect the trace's backend, tool calls, calculator results, source
+IDs, and errors. The model should not perform financial arithmetic itself.
 
 ## Honest limitations
 
-- The active index contains eight source documents for Microsoft and Tesla covering
-  2024 and 2025 10-Ks and transcripts.
-- Corpus onboarding and parts of query routing are still specialized to the Phase 1
-  corpus. Manifest-driven dynamic company support is the next milestone.
-- Some deterministic recovery rules were added for financial tables. They improve
-  safety on the prototype corpus but should later be replaced by a normalized fact
-  store and generic schema-driven routing.
-- The official agent is deliberately scope-locked and is not an open-ended web agent.
-- The previous bounded workflow remains as a migration fallback; remove it only after
-  the official backend passes the project evaluation set.
-- Live answer quality still depends on the configured OpenAI and Cohere services.
+- The active index covers Microsoft and Tesla, fiscal years 2024 and 2025, 10-Ks,
+  and Q4 transcripts. Other companies and years require indexed data.
+- The formula catalog in `src/financial/formula_definitions.json` is retained but
+  is not yet compiled into the LangGraph tools. The calculator currently exposes
+  its declared validated-fact operations.
+- Answer quality depends on retrieved evidence and the configured model and reranker.
+- The graph is scope-locked and does not access the public web or live financial feeds.
 
 ## Answers to likely manager questions
 
-**Why use both dense and BM25 retrieval?**
+**Why combine dense and lexical search?**
 
-Dense retrieval captures semantic similarity. BM25 is strong for exact financial
-terms, table labels, abbreviations, and numbers. RRF combines both without assuming
-their scores are directly comparable.
+Dense retrieval finds semantically related passages. Lexical search helps with exact
+financial terms, table labels, abbreviations, and values. Reciprocal-rank fusion
+combines the ranked results before optional reranking.
 
-**What happens when Cohere fails?**
+**What happens if Cohere reranking fails?**
 
-Reranking is fail-open. The system retains the pre-rerank RRF candidates and continues
-instead of returning an empty result.
+The system continues with the fused retrieval order.
 
-**Why not run every question through the agent?**
+**How are calculations grounded?**
 
-Simple questions need only one retrieval and answer-generation pass. The direct path
-reduces latency, cost, and failure surface. Agentic execution is reserved for tasks
-that benefit from multiple evidence or calculation steps.
+The search tool validates numeric facts and returns their IDs. The calculator accepts
+only those IDs, checks units and compatible periods, and returns the formula,
+inputs, result, and source IDs.
 
-**How is this ReAct?**
+**Is the project corpus agnostic?**
 
-LangChain `create_agent` runs the model/tool/observation loop. Observations include
-retrieved sources, validated facts, missing groups, and calculator results. Final
-answers are still composed and checked by the existing grounded generation layer;
-hidden model reasoning and private prompts are not exposed.
-
-**Is it completely generic?**
-
-The retrieval, reranking, compression, tools, calculator, and agent contracts are
-reusable. Company discovery and some query/fact routing still require the planned
-dynamic-catalogue and normalized-fact-store refactor.
-
-## Demo safety checklist
-
-- Confirm `/api/health` reports ready before the meeting.
-- Keep `phase1-v2` selected.
-- Confirm `FINRAG_DEBUG_TRACES=true`, but never display `.env`.
-- Run the three demo questions once before the meeting and save screenshots.
-- Keep one previously successful response available in case an external API is slow.
-- Do not re-ingest or refactor the corpus immediately before the presentation.
+The retrieval and agent contracts are reusable, but the current index and parts of
+scope vocabulary are tailored to the Phase 1 Microsoft and Tesla corpus.
