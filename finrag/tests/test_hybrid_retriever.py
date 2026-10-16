@@ -107,6 +107,24 @@ class HybridExpansionTests(unittest.TestCase):
         self.assertEqual(lexical.limits[0], 48)
         self.assertEqual(lexical.limits[1:], [16, 16, 16])
 
+    def test_request_context_limits_are_forwarded_to_parent_builder(self) -> None:
+        context = FakeContextBuilder()
+        retriever = HybridRetriever(
+            FakeVectorStore(),
+            lexical_index=FakeLexicalIndex(),
+            context_builder=context,
+        )
+
+        retriever.retrieve(
+            "total revenue",
+            Scope(("MSFT",), ("2025",), "10K"),
+            max_parents=4,
+            max_chars=24_000,
+        )
+
+        self.assertEqual(context.kwargs["max_parents"], 4)
+        self.assertEqual(context.kwargs["max_chars"], 24_000)
+
 
 if __name__ == "__main__":
     unittest.main()

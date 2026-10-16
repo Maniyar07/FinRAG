@@ -94,6 +94,16 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(metrics.total_tokens, 1_200)
         self.assertIsNone(metrics.estimated_cost_usd)
 
+    def test_failed_llm_call_is_counted_with_unknown_usage(self) -> None:
+        handler = UsageCallbackHandler("gpt-4o-mini")
+        with collect_usage() as collector:
+            handler.on_llm_error(TimeoutError("provider timed out"))
+        metrics = collector.snapshot(latency_ms=25)
+
+        self.assertEqual(metrics.llm_calls, 1)
+        self.assertEqual(metrics.total_tokens, 0)
+        self.assertIsNone(metrics.estimated_cost_usd)
+
     def test_collector_context_reaches_fastapi_worker_thread(self) -> None:
         handler = UsageCallbackHandler("gpt-4o-mini")
 

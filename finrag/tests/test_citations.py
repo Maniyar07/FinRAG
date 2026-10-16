@@ -61,6 +61,11 @@ class CitationTests(unittest.TestCase):
         self.assertTrue(result.valid)
         self.assertIn("[S1]", result.answer)
 
+    def test_collapses_nested_source_citation_brackets(self) -> None:
+        result = validate_answer_payload("Revenue increased [[s1]].", [{"id": "S1"}])
+        self.assertTrue(result.valid)
+        self.assertEqual(result.answer, "Revenue increased [S1].")
+
     def test_appends_valid_structured_ids_when_inline_id_is_missing(self) -> None:
         sources = [{"id": "S1"}, {"id": "S2"}]
         result = validate_answer_payload(

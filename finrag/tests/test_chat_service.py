@@ -1,1056 +1,394 @@
 from __future__ import annotations
 
+import json
 import unittest
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.app.chat_service import ChatService
-from src.app.response_composer import (
-    requires_verified_statement_values,
-    verified_calculation_partial,
-    verified_calculation_text,
-)
-from src.generation.answer_guardrails import UNVERIFIABLE_RESPONSE
-from src.generation.narrative_quotes import VerifiedQuote
-from src.financial.models import ValueType
-from src.orchestration.models import EvidenceType
-from src.retrieval.semantic_query_parser import SemanticQueryResult
-from src.retrieval.structured_lookup import DirectAnswer, VerifiedTableRow
-from src.schemas import ChatResult, Decision, RetrievalBundle, Scope
-from src.tools.document_search import DocumentSearchTool
+from src.schemas import Decision, Scope
 
 
 class FakeLogger:
-    def info(self, message) -> None:
-        pass
-
-
-class FakeRetriever:
-    reranker = None
-
     def __init__(self) -> None:
-        self.calls = []
+        self.records: list[str] = []
 
-    def retrieve(self, query, scope, **kwargs):
-        self.calls.append((query, scope, kwargs))
-        ticker, year = scope.groups[0]
-        doc_type = scope.doc_type or (
-            scope.required_doc_types[0] if scope.required_doc_types else "10K"
-        )
-        source = {
-            "id": "S1",
-            "ticker": ticker,
-            "fiscal_year": year,
-            "doc_type": doc_type,
-            "evidence_text": "| Metric | 2024 |\n|---|---|\n| Revenue | 1 |",
-        }
-        return RetrievalBundle(
-            "context",
-            [source],
-            scope,
-            1,
-            covered_groups=scope.groups,
-        )
+    def info(self, message: str) -> None:
+        self.records.append(message)
 
 
-class FakeGenerator:
-    def __init__(self) -> None:
-        self.calls = []
-
-    def generate_with_trace(self, question, bundle, **kwargs):
-        self.calls.append((question, bundle, kwargs))
-        return SimpleNamespace(
-            answer="Completed.",
-            attempts=1,
-            validation_reason="valid",
-            raw_output_previews=(),
-        )
-
-
-class FakeSemanticParser:
-    def __init__(self, result=None, error=None) -> None:
-        self.result = result
+class FakeGraph:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        answer: str = "Microsoft reported revenue of $281,724 million [S1].",
+    ) -> None:
         self.error = error
-        self.calls = 0
+        self.answer = answer
+        self.calls: list[tuple[dict, dict]] = []
 
-    def parse(self, **kwargs):
-        self.calls += 1
+    def invoke(self, inputs: dict, *, config: dict) -> dict:
+        self.calls.append((inputs, config))
         if self.error is not None:
             raise self.error
-        return self.result
-
-
-def _service(*, semantic_parser=None) -> ChatService:
-    service = ChatService.__new__(ChatService)
-    service.available_keys = {
-        ("MSFT", "2024", "10K"),
-        ("MSFT", "2025", "10K"),
-        ("TSLA", "2025", "10K"),
-        ("TSLA", "2025", "TRANSCRIPT"),
-    }
-    service.retriever = FakeRetriever()
-    service.document_search_tool = DocumentSearchTool(service.retriever)
-    service.generator = FakeGenerator()
-    service.semantic_parser = semantic_parser
-    service.logger = FakeLogger()
-    return service
-
-
-class ChatServiceOrchestrationTests(unittest.TestCase):
-    def test_langchain_backend_routes_multihop_without_legacy_planner(self) -> None:
-        service = _service()
-        service.agent_backend = "langchain"
-        service.multihop_executor = object()
-        expected = ChatResult(
-            Decision.ANSWERED,
-            "Agent answer.",
-            Scope(("MSFT",), ("2025",), "10K"),
-        )
-        fake_agent = SimpleNamespace(run=lambda **_: expected)
-
-        with patch(
-            "src.app.chat_service.LangChainReActAgent",
-            return_value=fake_agent,
-        ) as agent_class:
-            result = service._run_multihop(
-                question="Compare the requested values.",
-                scope=expected.scope,
-                inherited_fields=(),
-                history=None,
-                query_expansions=(),
-                wants_table=False,
-                trace={"multihop": {}},
-            )
-
-        self.assertIs(result, expected)
-        self.assertIs(agent_class.call_args.kwargs["executor"], service.multihop_executor)
-
-    def test_narrative_intent_family_does_not_require_statement_values(self) -> None:
-        questions = (
-            "What factors affected automotive profitability?",
-            "Why did annual revenue decline?",
-            "Discuss the impact on operating performance.",
-            "Summarize management commentary about revenue drivers.",
-        )
-
-        for question in questions:
-            with self.subTest(question=question):
-                self.assertFalse(requires_verified_statement_values(question))
-
-        self.assertTrue(
-            requires_verified_statement_values("What was total revenue in 2025?")
-        )
-
-    def test_verified_rows_answer_simple_multi_year_comparison_without_llm(self) -> None:
-        service = _service()
-        rows = tuple(
-            VerifiedTableRow(
-                "Total revenues",
-                year,
-                value,
-                "millions",
+        source = {
+            "id": "S1",
+            "ticker": "MSFT",
+            "fiscal_year": "2025",
+            "doc_type": "10K",
+            "source": "MSFT_2025_10K.pdf",
+        }
+        tool_result = {
+            "context": "[SOURCE S1 | TICKER: MSFT | FISCAL YEAR: 2025 | TYPE: 10K]\nTotal revenue: 281,724 million",
+            "sources": [source],
+            "validated_facts": [],
+        }
+        return {
+            "messages": [
+                *inputs["messages"],
                 {
-                    "id": "S1", "parent_id": f"statement-{year}", "ticker": "MSFT",
-                    "fiscal_year": year, "doc_type": "10K", "section": "Item 8",
-                    "source": f"MSFT_{year}_10K.pdf", "evidence_text": value,
+                    "type": "tool",
+                    "name": "search_financial_documents",
+                    "tool_call_id": "call-1",
+                    "content": json.dumps(tool_result),
                 },
-            )
-            for year, value in (("2024", "245,122"), ("2025", "281,724"))
-        )
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: rows,
-        )
+                {
+                    "type": "ai",
+                    "content": self.answer,
+                },
+            ]
+        }
 
-        result = service.ask(
-            "Compare Microsoft's total revenue in its 2024 and 2025 10-K filings."
+
+class PlanCoverageGraph:
+    def invoke(self, inputs: dict, *, config: dict) -> dict:
+        del config
+        return {
+            "messages": [
+                *inputs["messages"],
+                {"type": "ai", "tool_calls": [{
+                    "id": "plan-1", "name": "plan_financial_request", "args": {},
+                }]},
+                {"type": "tool", "name": "plan_financial_request",
+                 "tool_call_id": "plan-1", "content": json.dumps({
+                    "plan_validated": True,
+                    "plan": {"requirements": [
+                        {"requirement_id": "msft_rev", "ticker": "MSFT",
+                         "source_year": "2025", "doc_type": "10K",
+                         "reported_period": "FY2025", "metric": "revenue"},
+                        {"requirement_id": "tsla_rev", "ticker": "TSLA",
+                         "source_year": "2025", "doc_type": "10K",
+                         "reported_period": "FY2025", "metric": "revenue"},
+                    ], "calculations": []},
+                 })},
+                {"type": "tool", "name": "search_financial_documents",
+                 "tool_call_id": "search-1", "content": json.dumps({
+                    "context": "[SOURCE S1 | TICKER: MSFT | FISCAL YEAR: 2025 | TYPE: 10K]\nRevenue: 100",
+                    "sources": [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
+                    "validated_facts": [],
+                 })},
+                {"type": "ai", "content": "Microsoft revenue was 100 [S1]."},
+            ]
+        }
+
+
+class PlanClarificationGraph:
+    def invoke(self, inputs: dict, *, config: dict) -> dict:
+        del config
+        return {"messages": [
+            *inputs["messages"],
+            {"type": "tool", "name": "plan_financial_request",
+             "tool_call_id": "plan-1", "content": json.dumps({
+                "plan_validated": True,
+                "plan": {"requirements": [], "calculations": [],
+                         "clarification": "Which revenue measure do you mean?"},
+             })},
+            {"type": "ai", "content": "Which revenue measure do you mean?"},
+        ]}
+
+
+class PartialStreamGraph:
+    def stream(self, inputs: dict, *, config: dict, stream_mode: str):
+        del config
+        assert stream_mode == "values"
+        yield {
+            "messages": [
+                *inputs["messages"],
+                {
+                    "type": "ai",
+                    "tool_calls": [{
+                        "id": "search-1",
+                        "name": "search_financial_documents",
+                        "args": {"ticker": "MSFT", "filing_year": "2025",
+                                 "doc_type": "10K", "query": "revenue"},
+                    }],
+                },
+                {
+                    "type": "tool",
+                    "name": "search_financial_documents",
+                    "tool_call_id": "search-1",
+                    "content": json.dumps({
+                        "ticker": "MSFT", "filing_year": "2025", "doc_type": "10K",
+                        "context": "[SOURCE S1 | TICKER: MSFT | FISCAL YEAR: 2025 | TYPE: 10K]\nRevenue: 100",
+                        "sources": [{
+                            "id": "S1", "parent_id": "P1", "ticker": "MSFT",
+                            "fiscal_year": "2025", "doc_type": "10K",
+                        }],
+                        "validated_facts": [],
+                    }),
+                },
+            ]
+        }
+        raise GraphRecursionError("test recursion exhaustion")
+
+
+class BudgetLimitedStreamGraph:
+    def stream(self, inputs: dict, *, config: dict, stream_mode: str):
+        del config
+        assert stream_mode == "values"
+        yield {
+            "messages": [
+                *inputs["messages"],
+                {
+                    "type": "tool",
+                    "name": "search_financial_documents",
+                    "tool_call_id": "search-1",
+                    "content": json.dumps({
+                        "ticker": "MSFT", "filing_year": "2025", "doc_type": "10K",
+                        "context": "[SOURCE S1 | TICKER: MSFT | FISCAL YEAR: 2025 | TYPE: 10K]\nRevenue: 100",
+                        "sources": [{
+                            "id": "S1", "parent_id": "P1", "ticker": "MSFT",
+                            "fiscal_year": "2025", "doc_type": "10K",
+                        }],
+                        "validated_facts": [],
+                    }),
+                },
+                {
+                    "type": "tool",
+                    "name": "search_financial_documents",
+                    "tool_call_id": "search-2",
+                    "content": json.dumps({
+                        "action_budget_exhausted": True,
+                        "message": "Request budget reached.",
+                    }),
+                },
+            ]
+        }
+
+
+class GraphRecursionError(Exception):
+    pass
+
+
+class ChatServiceLangGraphTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = ChatService.__new__(ChatService)
+        self.service.available_keys = {("MSFT", "2025", "10K")}
+        self.service.retriever = SimpleNamespace(reranker=None)
+        self.service.semantic_parser = None
+        self.service.agent_graph = FakeGraph()
+        self.service.logger = FakeLogger()
+
+    def test_process_query_invokes_graph_and_extracts_cited_sources(self) -> None:
+        result = self.service.process_query(
+            {"messages": [{"role": "user", "content": "Revenue?"}]},
+            thread_id="conversation-1",
+            scope=Scope(("MSFT",), ("2025",), "10K"),
         )
 
         self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertIn("245,122 million [S1]", result.answer)
-        self.assertIn("281,724 million [S2]", result.answer)
-        self.assertEqual(result.trace["retrieval"]["candidate_count"], 0)
-        self.assertEqual(result.trace["generation"]["mode"], "verified_statement_answer")
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(service.generator.calls, [])
+        self.assertIn("281,724 million [S1]", result.answer)
+        self.assertEqual(result.sources[0]["id"], "S1")
+        _, config = self.service.agent_graph.calls[0]
+        self.assertNotEqual(config["configurable"]["thread_id"], "conversation-1")
+        self.assertGreater(config["recursion_limit"], 1)
+        self.assertEqual(result.trace["agent"]["backend"], "langgraph")
+        self.assertTrue(result.trace["answer_validation"]["valid"])
 
-    def test_verified_comparative_column_is_grouped_by_source_filing_year(self) -> None:
-        service = _service()
-        service.available_keys.add(("TSLA", "2024", "10K"))
-        row = VerifiedTableRow(
-            "Automotive regulatory credits", "2023", "1,790", "millions",
-            {
-                "id": "S1", "parent_id": "statement-2024", "ticker": "TSLA",
-                "fiscal_year": "2024", "doc_type": "10K", "section": "Item 8",
-                "source": "TSLA_2024_10K.pdf", "evidence_text": "1,790",
-            },
-        )
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: (row,),
+    def test_process_query_rejects_unknown_citation_ids(self) -> None:
+        self.service.agent_graph = FakeGraph(
+            answer="Microsoft reported revenue of $281,724 million [S9]."
         )
 
-        result = service.ask(
-            "According to Tesla's 2024 10-K, how much automotive regulatory "
-            "credits revenue was reported for the comparative year 2023?"
+        result = self.service.process_query(
+            {"messages": [{"role": "user", "content": "Revenue?"}]},
+            thread_id="conversation-1",
+            scope=Scope(("MSFT",), ("2025",), "10K"),
         )
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertIn("1,790 million", result.answer)
-        self.assertEqual(result.trace["generation"]["mode"], "verified_statement_answer")
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(service.generator.calls, [])
-
-    def test_generation_validation_failure_has_distinct_decision(self) -> None:
-        service = _service()
-        service.generator.generate_with_trace = lambda *_, **__: SimpleNamespace(
-            answer=UNVERIFIABLE_RESPONSE,
-            attempts=3,
-            validation_reason="generation_validation_failed:missing_source_ids",
-            raw_output_previews=(),
-        )
-
-        result = service.ask("Summarize Microsoft's 2025 10-K risk factors.")
 
         self.assertEqual(result.decision, Decision.VALIDATION_FAILED)
-
-    def test_narrative_request_keeps_statement_row_in_ordinary_generation(self) -> None:
-        service = _service()
-        row_source = {
-            "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
-            "fiscal_year": "2025", "doc_type": "10K",
-            "source": "TSLA_2025_10K.pdf", "section": "Item 8",
-            "evidence_text": "Total revenues 94,827",
-        }
-        row = VerifiedTableRow("Total revenues", "2025", "94,827", "millions", row_source)
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: (row,),
+        self.assertIn("could not be verified", result.answer)
+        self.assertEqual(
+            result.trace["answer_validation"]["reason"], "unknown_inline_source_ids:S9"
         )
 
-        result = service.ask("Explain Tesla revenue in its 2025 10-K.")
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertEqual(result.trace["retrieval"]["verified_statement_rows"], 1)
-        _, bundle, kwargs = service.generator.calls[0]
-        self.assertEqual(kwargs["verified_rows"], ())
-        self.assertEqual(len(bundle.sources), 2)
-
-    def test_mda_factor_question_cannot_be_reduced_to_one_statement_value(self) -> None:
-        service = _service()
-        row_source = {
-            "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
-            "fiscal_year": "2025", "doc_type": "10K", "section": "Item 8",
-            "source": "TSLA_2025_10K.pdf", "evidence_text": "Automotive revenues 69,526",
-        }
-        row = VerifiedTableRow(
-            "Total automotive revenues", "2025", "69,526", "millions", row_source
+    def test_process_query_repairs_missing_citations_from_validated_evidence(self) -> None:
+        self.service.agent_graph = FakeGraph(
+            answer="Microsoft reported revenue of $281,724 million."
         )
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: (row,),
-        )
-
-        result = service.ask(
-            "According to Tesla's 2025 10-K MD&A, what factors affected "
-            "automotive revenue and profitability?"
-        )
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertEqual(len(service.retriever.calls), 1)
-        self.assertEqual(len(service.generator.calls), 1)
-        self.assertEqual(service.generator.calls[0][2]["verified_rows"], ())
-        self.assertNotEqual(
-            result.trace["generation"].get("mode"), "verified_statement_answer"
-        )
-
-    def test_single_verified_statement_value_bypasses_retrieval_and_generation(self) -> None:
-        service = _service()
-        row_source = {
-            "id": "S1", "parent_id": "statement-parent", "ticker": "TSLA",
-            "fiscal_year": "2025", "doc_type": "10K",
-            "source": "TSLA_2025_10K.pdf", "section": "Item 8",
-            "evidence_text": "Total revenues 94,827",
-        }
-        row = VerifiedTableRow("Total revenues", "2025", "94,827", "millions", row_source)
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: (row,),
-        )
-
-        result = service.ask("What was Tesla revenue in its 2025 10-K?")
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertIn("94,827 million [S1]", result.answer)
-        self.assertEqual(result.trace["retrieval"]["candidate_count"], 0)
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(service.generator.calls, [])
-
-    def test_negated_calculation_uses_verified_statement_fast_path(self) -> None:
-        service = _service()
-        rows = tuple(
-            VerifiedTableRow(
-                "Net income", year, value, "millions",
-                {
-                    "id": "S1", "parent_id": f"statement-{year}", "ticker": "MSFT",
-                    "fiscal_year": year, "doc_type": "10K", "section": "Item 8",
-                    "source": f"MSFT_{year}_10K.pdf", "evidence_text": value,
-                },
-            )
-            for year, value in (("2024", "88,136"), ("2025", "101,832"))
-        )
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: rows,
-        )
-
-        result = service.ask(
-            "Compare Microsoft's net income in its 2024 and 2025 10-K filings "
-            "without calculating the change."
-        )
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertEqual(result.trace["retrieval"]["candidate_count"], 0)
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(service.generator.calls, [])
-
-    def test_incomplete_statement_coverage_falls_back_to_hybrid_retrieval(self) -> None:
-        service = _service()
-        row = VerifiedTableRow(
-            "Total revenue", "2024", "245,122", "millions",
-            {
-                "id": "S1", "parent_id": "statement-2024", "ticker": "MSFT",
-                "fiscal_year": "2024", "doc_type": "10K", "section": "Item 8",
-                "source": "MSFT_2024_10K.pdf", "evidence_text": "245,122",
-            },
-        )
-        service.structured_lookup = SimpleNamespace(
-            answer=lambda *_, **__: None,
-            statement_rows=lambda *_, **__: (row,),
-        )
-
-        result = service.ask(
-            "Compare Microsoft's total revenue in its 2024 and 2025 10-K filings."
-        )
-
-        self.assertEqual(result.decision, Decision.INSUFFICIENT_EVIDENCE)
-        self.assertEqual(len(service.retriever.calls), 1)
-        self.assertEqual(service.generator.calls, [])
-
-    def test_exact_table_lookup_bypasses_ranked_search_and_generation(self) -> None:
-        service = _service()
-        direct = DirectAnswer(
-            "## BALANCE SHEETS\n\n| Year | 2025 |\n| --- | --- |\n| Assets | 619,003 |\n\n[S1]",
-            [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
-            "exact_table",
-        )
-        service.structured_lookup = SimpleNamespace(answer=lambda *_, **__: direct)
-
-        result = service.ask("Give me the exact balance sheet table in MSFT's 2025 10-K")
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertEqual(result.trace["retrieval"]["mode"], "exact_table")
-        self.assertEqual(result.trace["multihop"], {"enabled": False, "selected": False})
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(service.generator.calls, [])
-
-    def test_verified_calculation_displays_currency_and_scale(self) -> None:
-        facts = (
-            SimpleNamespace(
-                fact_id="F1", ticker="MSFT", period="2024", raw_value="$245,122",
-                source_id="S1", value_type=ValueType.CURRENCY,
-                currency="USD", scale="millions",
-            ),
-            SimpleNamespace(
-                fact_id="F2", ticker="MSFT", period="2025", raw_value="281,724",
-                source_id="S2", value_type=ValueType.CURRENCY,
-                currency="USD", scale="millions",
-            ),
-        )
-        calculation = SimpleNamespace(
-            label="MSFT revenue change",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"), result=Decimal("14.93"),
-                result_unit="percent", currency=None, scale=None,
-                source_ids=("S1", "S2"),
-                formula="((new - old) / abs(old)) * 100",
-                operation=SimpleNamespace(value="percentage_change"),
-            ),
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=(calculation,)),
-            "Calculate the percentage change and show the formula and inputs.",
-        )
-
-        self.assertIn("USD 245,122 million", answer)
-        self.assertIn("USD 281,724 million", answer)
-        self.assertIn("**Formula:** `((new - old) / abs(old)) * 100`", answer)
-        self.assertIn("**14.93%**", answer)
-        self.assertNotIn("MSFT revenue change:", answer)
-
-    def test_verified_calculation_displays_an_intermediate_result_operand(self) -> None:
-        facts = (
-            SimpleNamespace(
-                fact_id="F1", ticker="MSFT", metric="Cash",
-                period="2025", raw_value="30,242", source_id="S1",
-                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
-            ),
-            SimpleNamespace(
-                fact_id="F2", ticker="MSFT", metric="Investments",
-                period="2025", raw_value="64,323", source_id="S1",
-                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
-            ),
-            SimpleNamespace(
-                fact_id="F3", ticker="MSFT", metric="Current liabilities",
-                period="2025", raw_value="141,218", source_id="S1",
-                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
-            ),
-        )
-        calculations = (
-            SimpleNamespace(
-                calculation_id="cash_sum",
-                label="MSFT numerator sum",
-                result=SimpleNamespace(
-                    input_fact_ids=("F1", "F2"), result=Decimal("94565"),
-                    result_unit="currency", currency="USD", scale="millions",
-                    source_ids=("S1",), formula="sum(values)",
-                    operation=SimpleNamespace(value="sum"),
-                ),
-            ),
-            SimpleNamespace(
-                calculation_id="liquidity_ratio",
-                label="MSFT liquidity coverage ratio",
-                result=SimpleNamespace(
-                    input_fact_ids=("cash_sum", "F3"),
-                    result=Decimal("0.669638431361441176"),
-                    result_unit="ratio", currency=None, scale=None,
-                    source_ids=("S1",), formula="numerator / denominator",
-                    operation=SimpleNamespace(value="ratio"),
-                ),
-            ),
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=calculations),
-            "Calculate the liquidity ratio and show every input and formula.",
-        )
-
-        self.assertIn("USD 94,565 million", answer)
-        self.assertIn("USD 141,218 million", answer)
-        self.assertIn("`sum(values)`", answer)
-        self.assertIn("`numerator / denominator`", answer)
-        self.assertIn("**0.67 ratio**", answer)
-
-    def test_net_profit_margin_ratio_is_presented_as_a_percentage(self) -> None:
-        facts = (
-            SimpleNamespace(
-                fact_id="F1", ticker="TSLA", metric="Net income", period="2025",
-                raw_value="$3,855", source_id="S1", value_type=ValueType.CURRENCY,
-                currency="USD", scale="millions",
-            ),
-            SimpleNamespace(
-                fact_id="F2", ticker="TSLA", metric="Total revenues", period="2025",
-                raw_value="94,827", source_id="S2", value_type=ValueType.CURRENCY,
-                currency="USD", scale="millions",
-            ),
-        )
-        calculation = SimpleNamespace(
-            label="Calculate TSLA net profit margin",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"),
-                result=Decimal("0.0406529785820494163"),
-                result_unit="ratio", currency=None, scale=None,
-                source_ids=("S1", "S2"),
-                operation=SimpleNamespace(value="ratio"),
-            ),
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=(calculation,)),
-            "Provide revenue, net income, and calculate net profit margin.",
-        )
-
-        self.assertIn("#### TSLA - Net profit margin", answer)
-        self.assertIn("**Net income (2025):** USD 3,855 million", answer)
-        self.assertIn("**Total revenues (2025):** USD 94,827 million", answer)
-        self.assertIn("**4.07%**", answer)
-        self.assertNotIn("0.04 ratio", answer)
-
-    def test_non_margin_percentage_ratio_uses_input_metric_label(self) -> None:
-        facts = (
-            SimpleNamespace(
-                fact_id="F1", ticker="MSFT", metric="Research and development",
-                period="2025", raw_value="32,488", source_id="S1",
-                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
-            ),
-            SimpleNamespace(
-                fact_id="F2", ticker="MSFT", metric="Total revenue", period="2025",
-                raw_value="281,724", source_id="S1",
-                value_type=ValueType.CURRENCY, currency="USD", scale="millions",
-            ),
-        )
-        calculation = SimpleNamespace(
-            label="R&D expense percentage of revenue",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"), result=Decimal("0.115322"),
-                result_unit="ratio", currency=None, scale=None,
-                source_ids=("S1",), operation=SimpleNamespace(value="ratio"),
-            ),
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=(calculation,)),
-            "Calculate research and development expense as a percentage of total revenue.",
-        )
-
-        self.assertIn(
-            "Research and development as a percentage of Total revenue", answer
-        )
-        self.assertNotIn("Net profit margin", answer)
-
-    def test_cross_company_difference_labels_each_ticker(self) -> None:
-        facts = (
-            SimpleNamespace(
-                fact_id="F1", ticker="AAA", metric="Total revenue", period="2025",
-                raw_value="281,724", source_id="S1", value_type=ValueType.CURRENCY,
-                currency="USD", scale="millions",
-            ),
-            SimpleNamespace(
-                fact_id="F2", ticker="BBB", metric="Total revenues", period="2025",
-                raw_value="94,827", source_id="S2", value_type=ValueType.CURRENCY,
-                currency="USD", scale="millions",
-            ),
-        )
-        calculation = SimpleNamespace(
-            label="AAA minus BBB total revenue",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"), result=Decimal("186897"),
-                result_unit="currency", currency="USD", scale="millions",
-                source_ids=("S1", "S2"),
-                operation=SimpleNamespace(value="difference"),
-            ),
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=(calculation,)),
-            "Compare AAA and BBB total revenue and calculate the difference.",
-        )
-
-        self.assertIn("#### AAA vs BBB - Total revenue", answer)
-        self.assertIn("**AAA (2025):** USD 281,724 million [S1]", answer)
-        self.assertIn("**BBB (2025):** USD 94,827 million [S2]", answer)
-        self.assertIn("**Difference:** **USD 186,897 million**", answer)
-        self.assertNotIn("#### AAA - Total revenue", answer)
-
-    def test_calculation_summary_omits_unrequested_winner(self) -> None:
-        facts = (
-            SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
-            SimpleNamespace(fact_id="F3", ticker="BBB", metric="Revenue", period="2024", raw_value="100", source_id="S3"),
-            SimpleNamespace(fact_id="F4", ticker="BBB", metric="Revenue", period="2025", raw_value="90", source_id="S4"),
-        )
-        calculations = tuple(
-            SimpleNamespace(
-                label="Calculate the percentage change in revenue for " + ticker,
-                result=SimpleNamespace(
-                    input_fact_ids=ids, result=Decimal(result),
-                    result_unit="percent", currency=None, scale=None,
-                    source_ids=sources,
-                    operation=SimpleNamespace(value="percentage_change"),
-                ),
-            )
-            for ticker, ids, result, sources in (
-                ("AAA", ("F1", "F2"), "20", ("S1", "S2")),
-                ("BBB", ("F3", "F4"), "-10", ("S3", "S4")),
-            )
-        )
-        execution = SimpleNamespace(facts=facts, calculations=calculations)
-
-        answer = verified_calculation_text(
-            execution, "Calculate each company's revenue percentage change."
-        )
-
-        self.assertIn("#### AAA - Revenue", answer)
-        self.assertIn("#### BBB - Revenue", answer)
-        self.assertIn("**20%**", answer)
-        self.assertIn("**-10%**", answer)
-        self.assertNotIn("Calculate the percentage change", answer)
-        self.assertNotIn("grew more", answer)
-
-    def test_calculation_and_exact_quote_are_composed_without_freeform_generation(self) -> None:
-        service = _service()
-        scope = Scope(("MSFT",), ("2024", "2025"), "10K")
-        bundle = RetrievalBundle(
-            "context",
-            [
-                {"id": "S1", "ticker": "MSFT", "fiscal_year": "2024", "doc_type": "10K"},
-                {"id": "S2", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"},
-                {"id": "S3", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"},
-            ],
-            scope,
-            3,
-        )
-        facts = (
-            SimpleNamespace(fact_id="F1", ticker="MSFT", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", ticker="MSFT", period="2025", raw_value="120", source_id="S2"),
-        )
-        calculation = SimpleNamespace(
-            label="MSFT cash change",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"), result=Decimal("20"),
-                result_unit="currency", currency="USD", scale="millions",
-                source_ids=("S1", "S2"), operation=SimpleNamespace(value="absolute_change"),
-            ),
-        )
-        requirement = SimpleNamespace(
-            requirement_id="risk", evidence_type=EvidenceType.NARRATIVE,
-            document_type="10K", question="summarize liquidity risks",
-            groups=(SimpleNamespace(key=("MSFT", "2025"), ticker="MSFT", fiscal_year="2025"),),
-        )
-        plan = SimpleNamespace(requirements=(requirement,), model_dump=lambda **_: {})
-        service.multihop_planner = SimpleNamespace(plan=lambda **_: plan)
-        service.multihop_executor = SimpleNamespace(execute=lambda *_, **__: SimpleNamespace(
-            bundle=bundle, complete=True, trace={}, issues=(),
-            calculations=(calculation,), facts=facts,
-        ))
-        service.narrative_quote_selector = SimpleNamespace(select=lambda **_: (
-            VerifiedQuote("MSFT", "2025", "10K", "S3", "Cash commitments may exceed available funding under adverse conditions."),
+        repair_model = SimpleNamespace(invoke=lambda messages: SimpleNamespace(
+            content="Microsoft reported revenue of $281,724 million [S1]."
         ))
 
-        result = service._run_multihop(
-            question="Compare cash and summarize liquidity risks.", scope=scope,
-            inherited_fields=(), history=None, query_expansions=(),
-            wants_table=False, trace={"multihop": {}},
-        )
+        with patch("src.app.chat_service.get_llm_engine", return_value=repair_model):
+            result = self.service.process_query(
+                {"messages": [{"role": "user", "content": "Revenue?"}]},
+                thread_id="conversation-1",
+                scope=Scope(("MSFT",), ("2025",), "10K"),
+            )
 
         self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertIn("USD 20 million", result.answer)
-        self.assertIn("Cash commitments may exceed", result.answer)
-        self.assertEqual(service.generator.calls, [])
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual(
+            result.trace["citation_repair"], {"attempted": True, "succeeded": True}
+        )
 
-    def test_missing_narrative_keeps_complete_calculations_as_answered(self) -> None:
-        service = _service()
-        scope = Scope(("MSFT",), ("2024", "2025"), "10K")
-        bundle = RetrievalBundle(
-            "context",
-            [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2024", "doc_type": "10K"},
-             {"id": "S2", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
-            scope, 2,
-        )
-        facts = (
-            SimpleNamespace(fact_id="F1", ticker="MSFT", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", ticker="MSFT", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
-        )
-        calculation = SimpleNamespace(
-            label="MSFT revenue percentage change",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"), result=Decimal("20"),
-                result_unit="percent", currency=None, scale=None,
-                source_ids=("S1", "S2"), operation=SimpleNamespace(value="percentage_change"),
-            ),
-        )
-        narrative = SimpleNamespace(
-            requirement_id="reason", evidence_type=EvidenceType.NARRATIVE,
-            document_type="TRANSCRIPT", question="explain revenue drivers",
-            groups=(SimpleNamespace(key=("MSFT", "2025"), ticker="MSFT", fiscal_year="2025"),),
-        )
-        plan = SimpleNamespace(
-            requirements=(narrative,), calculations=(object(),), model_dump=lambda **_: {}
-        )
-        service.multihop_planner = SimpleNamespace(plan=lambda **_: plan)
-        service.multihop_executor = SimpleNamespace(execute=lambda *_, **__: SimpleNamespace(
-            bundle=bundle, complete=True, trace={}, issues=(),
-            calculations=(calculation,), facts=facts,
+    def test_streaming_retains_tool_evidence_when_graph_recursion_fails(self) -> None:
+        self.service.agent_graph = PartialStreamGraph()
+        repair_model = SimpleNamespace(invoke=lambda messages: SimpleNamespace(
+            content="Microsoft reported revenue of $100 million [S1]."
         ))
-        service.narrative_quote_selector = SimpleNamespace(select=lambda **_: ())
 
-        result = service._run_multihop(
-            question="Calculate revenue growth and explain transcript drivers.",
-            scope=scope, inherited_fields=(), history=None, query_expansions=(),
-            wants_table=False, trace={"multihop": {}},
-        )
+        with patch("src.app.chat_service.get_llm_engine", return_value=repair_model):
+            result = self.service.process_query(
+                {"messages": [{"role": "user", "content": "Revenue?"}]},
+                thread_id="conversation-1",
+                scope=Scope(("MSFT",), ("2025",), "10K"),
+            )
 
         self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertIn("**20%**", result.answer)
-        self.assertIn("### Evidence limitations", result.answer)
-        self.assertIn("no explanation was inferred", result.answer)
-        self.assertEqual(service.generator.calls, [])
+        self.assertEqual(result.trace["error_type"], "GraphRecursionError")
+        self.assertEqual(result.trace["answer_recovery"]["reason"], "graph_recursion")
+        self.assertEqual(
+            result.trace["agent"]["tool_calls"], ["search_financial_documents"]
+        )
+        self.assertEqual(result.trace["retrieval"]["source_ids"], ["S1"])
 
-    def test_incomplete_execution_preserves_verified_partial_calculation(self) -> None:
-        service = _service()
-        scope = Scope(("MSFT",), ("2024", "2025"), "10K")
-        bundle = RetrievalBundle(
-            "context",
-            [{"id": "S1", "ticker": "MSFT", "fiscal_year": "2024", "doc_type": "10K"},
-             {"id": "S2", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"}],
-            scope, 2,
-        )
-        facts = (
-            SimpleNamespace(fact_id="F1", ticker="MSFT", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", ticker="MSFT", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
-        )
-        calculation = SimpleNamespace(
-            label="MSFT revenue percentage change",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"), result=Decimal("20"),
-                result_unit="percent", currency=None, scale=None,
-                source_ids=("S1", "S2"), operation=SimpleNamespace(value="percentage_change"),
-            ),
-        )
-        plan = SimpleNamespace(
-            requirements=(), calculations=(object(), object()), model_dump=lambda **_: {}
-        )
-        service.multihop_planner = SimpleNamespace(plan=lambda **_: plan)
-        service.multihop_executor = SimpleNamespace(execute=lambda *_, **__: SimpleNamespace(
-            bundle=bundle, complete=False, trace={},
-            issues=("TSLA 2025 operating income was not found",),
-            calculations=(calculation,), facts=facts,
+    def test_tool_budget_finalizes_from_partial_evidence_without_more_graph_turns(self) -> None:
+        self.service.agent_graph = BudgetLimitedStreamGraph()
+        repair_model = SimpleNamespace(invoke=lambda messages: SimpleNamespace(
+            content="Microsoft reported revenue of $100 million [S1]."
         ))
 
-        result = service._run_multihop(
-            question="Compare both companies' operating-income changes.",
-            scope=scope, inherited_fields=(), history=None, query_expansions=(),
-            wants_table=False, trace={"multihop": {}},
-        )
-
-        self.assertEqual(result.decision, Decision.INSUFFICIENT_EVIDENCE)
-        self.assertIn("**20%**", result.answer)
-        self.assertIn("TSLA 2025 operating income was not found", result.answer)
-        self.assertEqual(service.generator.calls, [])
-
-    def test_verified_calculation_partial_keeps_numbers_but_omits_unchecked_prose(self) -> None:
-        facts = (
-            SimpleNamespace(fact_id="F1", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", period="Year Ended December 31,", column_label="2025", raw_value="120", source_id="S2"),
-        )
-        calculation = SimpleNamespace(
-            label="MSFT revenue change",
-            result=SimpleNamespace(
-                input_fact_ids=("F1", "F2"),
-                result=Decimal("20"),
-                result_unit="percent",
-                currency=None,
-                scale=None,
-                source_ids=("S1", "S2"),
-                operation=SimpleNamespace(value="percentage_change"),
-            ),
-        )
-        execution = SimpleNamespace(
-            facts=facts,
-            calculations=(calculation,),
-            bundle=RetrievalBundle(
-                "context",
-                [
-                    {"id": "S1", "ticker": "MSFT", "fiscal_year": "2024", "doc_type": "10K"},
-                    {"id": "S2", "ticker": "MSFT", "fiscal_year": "2025", "doc_type": "10K"},
-                ],
-                Scope(("MSFT",), ("2024", "2025"), "10K"),
-                2,
-            ),
-        )
-        answer = verified_calculation_partial(execution)
-        self.assertIn("20%", answer)
-        self.assertIn("**2024:** 100", answer)
-        self.assertIn("**2025:** 120", answer)
-        self.assertIn("Evidence limitations", answer)
-
-    def test_comparison_conclusion_does_not_repeat_input_citations(self) -> None:
-        facts = (
-            SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
-            SimpleNamespace(fact_id="F3", ticker="BBB", metric="Revenue", period="2024", raw_value="100", source_id="S3"),
-            SimpleNamespace(fact_id="F4", ticker="BBB", metric="Revenue", period="2025", raw_value="90", source_id="S4"),
-        )
-        calculations = tuple(
-            SimpleNamespace(
-                label=f"{ticker} revenue change",
-                result=SimpleNamespace(
-                    input_fact_ids=ids, result=Decimal(result),
-                    result_unit="percent", currency=None, scale=None,
-                    source_ids=sources,
-                    operation=SimpleNamespace(value="percentage_change"),
-                ),
+        with patch("src.app.chat_service.get_llm_engine", return_value=repair_model):
+            result = self.service.process_query(
+                {"messages": [{"role": "user", "content": "Revenue?"}]},
+                thread_id="conversation-1",
+                scope=Scope(("MSFT",), ("2025",), "10K"),
             )
-            for ticker, ids, result, sources in (
-                ("AAA", ("F1", "F2"), "20", ("S1", "S2")),
-                ("BBB", ("F3", "F4"), "-10", ("S3", "S4")),
-            )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(
+            result.trace["answer_recovery"]["reason"], "tool_action_budget"
         )
 
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=calculations),
-            "Identify which company performed better.",
-        )
-
-        self.assertIn("AAA performed better", answer)
-        conclusion = answer.splitlines()[-1]
-        for source_id in ("S1", "S2", "S3", "S4"):
-            self.assertIn(f"[{source_id}]", answer)
-            self.assertNotIn(f"[{source_id}]", conclusion)
-
-    def test_absolute_and_percentage_changes_share_one_evidence_block(self) -> None:
-        facts = (
-            SimpleNamespace(fact_id="F1", ticker="AAA", metric="Revenue", period="2024", raw_value="100", source_id="S1"),
-            SimpleNamespace(fact_id="F2", ticker="AAA", metric="Revenue", period="2025", raw_value="120", source_id="S2"),
-        )
-        calculations = tuple(
-            SimpleNamespace(
-                label=f"AAA revenue {operation.replace('_', ' ')}",
-                result=SimpleNamespace(
-                    input_fact_ids=("F1", "F2"), result=Decimal(value),
-                    result_unit=unit, currency="USD" if unit == "currency" else None,
-                    scale="millions" if unit == "currency" else None,
-                    source_ids=("S1", "S2"),
-                    operation=SimpleNamespace(value=operation),
-                ),
-            )
-            for operation, value, unit in (
-                ("absolute_change", "20", "currency"),
-                ("percentage_change", "20", "percent"),
-            )
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=calculations),
-            "Calculate the absolute and percentage change in revenue.",
-        )
-
-        self.assertEqual(answer.count("#### AAA - Revenue"), 1)
-        self.assertEqual(answer.count("**2024:** 100 [S1]"), 1)
-        self.assertEqual(answer.count("**2025:** 120 [S2]"), 1)
-        self.assertIn("**Absolute change:** **USD 20 million**", answer)
-        self.assertIn("**Percentage change:** **20%**", answer)
-
-    def test_faster_growth_conclusion_uses_percentage_not_absolute_change(self) -> None:
-        facts = tuple(
-            SimpleNamespace(
-                fact_id=f"F{index}", ticker=ticker,
-                metric="Research and development", period=year,
-                raw_value=value, source_id=f"S{index}",
-            )
-            for index, (ticker, year, value) in enumerate(
-                (
-                    ("MSFT", "2024", "29,510"), ("MSFT", "2025", "32,488"),
-                    ("TSLA", "2024", "4,540"), ("TSLA", "2025", "6,411"),
-                ),
-                start=1,
-            )
-        )
-        calculations = tuple(
-            SimpleNamespace(
-                label=f"{ticker} R&D {operation}",
-                result=SimpleNamespace(
-                    input_fact_ids=ids, result=Decimal(value), result_unit=unit,
-                    currency="USD" if unit == "currency" else None,
-                    scale="millions" if unit == "currency" else None,
-                    source_ids=sources,
-                    operation=SimpleNamespace(value=operation),
-                ),
-            )
-            for ticker, ids, sources, operation, value, unit in (
-                ("MSFT", ("F1", "F2"), ("S1", "S2"), "absolute_change", "2978", "currency"),
-                ("MSFT", ("F1", "F2"), ("S1", "S2"), "percentage_change", "10.09", "percent"),
-                ("TSLA", ("F3", "F4"), ("S3", "S4"), "absolute_change", "1871", "currency"),
-                ("TSLA", ("F3", "F4"), ("S3", "S4"), "percentage_change", "41.21", "percent"),
-            )
-        )
-
-        answer = verified_calculation_text(
-            SimpleNamespace(facts=facts, calculations=calculations),
-            "Calculate both absolute and percentage changes and identify which increased spending faster.",
-        )
-
-        self.assertIn("TSLA grew faster", answer)
-        self.assertNotIn("MSFT grew faster", answer)
-
-    def test_compound_comparison_uses_enabled_multihop_path(self) -> None:
-        service = _service()
-        scope_bundle = RetrievalBundle(
-            "merged context",
-            [
-                {
-                    "id": "S1",
-                    "ticker": "MSFT",
-                    "fiscal_year": "2025",
-                    "doc_type": "10K",
-                    "evidence_text": "MSFT revenue",
-                },
-                {
-                    "id": "S2",
-                    "ticker": "TSLA",
-                    "fiscal_year": "2025",
-                    "doc_type": "10K",
-                    "evidence_text": "TSLA revenue",
-                },
-            ],
+    def test_process_query_requires_citations_for_every_comparison_group(self) -> None:
+        result = self.service.process_query(
+            {"messages": [{"role": "user", "content": "Compare both companies."}]},
+            thread_id="conversation-1",
             scope=Scope(
-                ("MSFT", "TSLA"),
-                ("2025",),
-                "10K",
+                tickers=("MSFT", "TSLA"),
+                years=("2025",),
+                doc_type="10K",
                 requested_groups=(("MSFT", "2025"), ("TSLA", "2025")),
             ),
-            candidate_count=2,
-            covered_groups=(("MSFT", "2025"), ("TSLA", "2025")),
         )
 
-        class FakePlan:
-            def model_dump(self, **kwargs):
-                del kwargs
-                return {"requirements": ["revenue"]}
-
-        class FakePlanner:
-            def __init__(self):
-                self.calls = []
-
-            def plan(self, **kwargs):
-                self.calls.append(kwargs)
-                return FakePlan()
-
-        class FakeExecutor:
-            def __init__(self):
-                self.calls = []
-
-            def execute(self, plan, **kwargs):
-                self.calls.append((plan, kwargs))
-                return SimpleNamespace(
-                    bundle=scope_bundle,
-                    complete=True,
-                    trace={"requirements": []},
-                    issues=(),
-                    calculations=(),
-                    facts=(),
-                )
-
-        service.multihop_enabled = True
-        service.multihop_planner = FakePlanner()
-        service.multihop_executor = FakeExecutor()
-
-        result = service.ask(
-            "Compare MSFT and TSLA revenue in their 2025 10-Ks and explain the difference."
+        self.assertEqual(result.decision, Decision.VALIDATION_FAILED)
+        self.assertEqual(
+            result.trace["answer_validation"]["reason"],
+            "missing_scope_group_citation",
+        )
+        self.assertEqual(
+            result.trace["answer_validation"]["missing_groups"],
+            [["TSLA", "2025", "10K"]],
         )
 
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertTrue(result.trace["multihop"]["selected"])
-        self.assertTrue(result.trace["agent"]["selected"])
-        self.assertEqual(result.trace["agent"]["protocol"], "reason_act_observe")
-        self.assertEqual(result.trace["agent"]["status"], "completed")
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(len(service.multihop_planner.calls), 1)
-        self.assertEqual(len(service.multihop_executor.calls), 1)
+    def test_process_query_checks_citations_against_planned_source_groups(self) -> None:
+        self.service.agent_graph = PlanCoverageGraph()
 
-    def test_clarification_accumulates_company_year_and_document_type(self) -> None:
-        parser = FakeSemanticParser(
-            SemanticQueryResult(
-                candidate_tickers=["TSLA"],
-                needs_clarification=True,
-                clarification_fields=["company"],
-            )
-        )
-        service = _service(semantic_parser=parser)
-        original = "How did the automaker's automotive gross margin change in 2025?"
-
-        first = service.ask(original)
-        self.assertEqual(first.decision, Decision.CLARIFY)
-        self.assertEqual(first.pending_clarification.candidate_tickers, ("TSLA",))
-        self.assertEqual(first.pending_clarification.scope.years, ("2025",))
-
-        second = service.ask(
-            "yes Tesla",
-            pending_clarification=first.pending_clarification,
-        )
-        self.assertEqual(second.decision, Decision.CLARIFY)
-        self.assertEqual(second.pending_clarification.scope.tickers, ("TSLA",))
-        self.assertEqual(second.pending_clarification.scope.years, ("2025",))
-        self.assertIn("document type", second.pending_clarification.missing_fields)
-
-        final = service.ask(
-            "10-K",
-            pending_clarification=second.pending_clarification,
-        )
-        self.assertEqual(final.decision, Decision.ANSWERED)
-        self.assertIsNone(final.pending_clarification)
-        self.assertEqual(final.scope.tickers, ("TSLA",))
-        self.assertEqual(final.scope.years, ("2025",))
-        self.assertEqual(final.scope.doc_type, "10K")
-        self.assertEqual(service.retriever.calls[0][0], original)
-        self.assertEqual(service.generator.calls[0][0], original)
-        self.assertEqual(parser.calls, 1)
-
-    def test_new_substantive_question_discards_pending_clarification(self) -> None:
-        parser = FakeSemanticParser(
-            SemanticQueryResult(
-                candidate_tickers=["TSLA"],
-                clarification_fields=["company"],
-            )
-        )
-        service = _service(semantic_parser=parser)
-        first = service.ask(
-            "How did the automaker's automotive gross margin change in 2025?"
-        )
-        new_question = "What was Microsoft's revenue in the 2024 10-K?"
-
-        result = service.ask(
-            new_question,
-            pending_clarification=first.pending_clarification,
+        result = self.service.process_query(
+            {"messages": [{"role": "user", "content": "Compare revenue."}]},
+            thread_id="conversation-3",
+            scope=Scope(
+                tickers=("MSFT", "TSLA"), years=("2025",), doc_type="10K",
+                requested_groups=(("MSFT", "2025"), ("TSLA", "2025")),
+            ),
         )
 
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        self.assertEqual(result.scope.tickers, ("MSFT",))
-        self.assertEqual(result.scope.years, ("2024",))
-        self.assertIsNone(result.pending_clarification)
-        self.assertEqual(service.retriever.calls[0][0], new_question)
-
-    def test_complete_table_intent_reaches_retrieval_and_generation(self) -> None:
-        service = _service()
-        question = "Show Microsoft's 2024 10-K balance sheet as a complete table."
-
-        result = service.ask(question)
-
-        self.assertEqual(result.decision, Decision.ANSWERED)
-        retrieval_call = service.retriever.calls[0]
-        self.assertTrue(retrieval_call[2]["preserve_all"])
-        self.assertEqual(retrieval_call[2]["query_expansions"], ())
-        generation_call = service.generator.calls[0]
-        self.assertEqual(generation_call[0], question)
-        self.assertTrue(generation_call[2]["wants_table"])
-        self.assertTrue(generation_call[2]["wants_complete_table"])
-
-    def test_explicit_unsupported_company_from_fallback_stops_retrieval(self) -> None:
-        parser = FakeSemanticParser(
-            SemanticQueryResult(
-                explicit_company_mentions=["IBM"],
-                comparison_intent=True,
-            )
+        self.assertEqual(result.decision, Decision.VALIDATION_FAILED)
+        self.assertEqual(
+            result.trace["answer_validation"]["reason"],
+            "missing_planned_source_group_citation",
         )
-        service = _service(semantic_parser=parser)
+        self.assertEqual(
+            result.trace["answer_validation"]["missing_planned_source_groups"],
+            [["TSLA", "2025", "10K"]],
+        )
 
-        result = service.ask("Compare IBM with MSFT in 2025.")
+    def test_process_query_returns_plan_requested_clarification(self) -> None:
+        self.service.agent_graph = PlanClarificationGraph()
 
-        self.assertEqual(result.decision, Decision.OUT_OF_SCOPE)
-        self.assertEqual(parser.calls, 1)
-        self.assertEqual(service.retriever.calls, [])
-
-    def test_explicit_unavailable_sec_form_stops_before_retrieval(self) -> None:
-        service = _service()
-
-        result = service.ask("Summarize Tesla's 2025 8-K filing.")
-
-        self.assertEqual(result.decision, Decision.DATA_UNAVAILABLE)
-        self.assertEqual(result.scope.doc_type, "8K")
-        self.assertEqual(service.retriever.calls, [])
-        self.assertEqual(service.generator.calls, [])
-
-    def test_suspicious_comparison_fails_closed_when_parser_fails(self) -> None:
-        parser = FakeSemanticParser(error=TimeoutError("semantic timeout"))
-        service = _service(semantic_parser=parser)
-
-        result = service.ask("Compare IBM with MSFT in 2025.")
+        result = self.service.process_query(
+            {"messages": [{"role": "user", "content": "Compare revenue."}]},
+            thread_id="conversation-4",
+            scope=Scope(("MSFT",), ("2025",), "10K"),
+        )
 
         self.assertEqual(result.decision, Decision.CLARIFY)
-        self.assertIn("confirm every company", result.answer)
-        self.assertEqual(service.retriever.calls, [])
+        self.assertEqual(result.answer, "Which revenue measure do you mean?")
+        self.assertIsNotNone(result.pending_clarification)
+
+    def test_ask_routes_resolved_scope_to_langgraph(self) -> None:
+        result = self.service.ask(
+            "What was Microsoft's total revenue in fiscal 2025 annual 10-K?",
+            thread_id="ui-conversation-7",
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        self.assertEqual(len(self.service.agent_graph.calls), 1)
+        inputs, config = self.service.agent_graph.calls[0]
+        self.assertNotEqual(config["configurable"]["thread_id"], "ui-conversation-7")
+        user_content = inputs["messages"][-1]["content"]
+        self.assertIn("Application-resolved scope (locked)", user_content)
+        self.assertIn('"MSFT"', user_content)
+        self.assertIn('"2025"', user_content)
+
+    def test_ask_passes_bounded_citation_free_history_even_with_conversation_id(self) -> None:
+        result = self.service.ask(
+            "What about its operating income?",
+            history=[
+                {"role": "user", "content": "What was Microsoft's 2025 revenue?"},
+                {"role": "assistant", "content": "Revenue was $281,724 million [S999]."},
+            ],
+            previous_scope=Scope(("MSFT",), ("2025",), "10K"),
+            thread_id="ui-conversation-7",
+        )
+
+        self.assertEqual(result.decision, Decision.ANSWERED)
+        inputs, _ = self.service.agent_graph.calls[0]
+        self.assertEqual(len(inputs["messages"]), 3)
+        self.assertNotIn("[S999]", inputs["messages"][1]["content"])
+
+    def test_incomplete_scope_is_clarified_before_graph_invocation(self) -> None:
+        result = self.service.ask("What was total revenue?")
+
+        self.assertEqual(result.decision, Decision.CLARIFY)
+        self.assertEqual(self.service.agent_graph.calls, [])
+
+    def test_graph_failure_returns_a_structured_error(self) -> None:
+        self.service.agent_graph = FakeGraph(error=TimeoutError("model timed out"))
+
+        result = self.service.process_query(
+            {"messages": [{"role": "user", "content": "Revenue?"}]},
+            thread_id="conversation-2",
+            scope=Scope(("MSFT",), ("2025",), "10K"),
+        )
+
+        self.assertEqual(result.decision, Decision.ERROR)
+        self.assertEqual(result.trace["error_type"], "TimeoutError")
+        self.assertTrue(self.service.logger.records)
 
 
 if __name__ == "__main__":

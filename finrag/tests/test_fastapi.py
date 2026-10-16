@@ -4,6 +4,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -65,6 +66,9 @@ class FakeChatService:
         previous_scope: Scope | None = None,
         history: list[dict] | None = None,
         pending_clarification=None,
+        thread_id: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
     ) -> ChatResult:
         self.calls.append(
             {
@@ -73,6 +77,9 @@ class FakeChatService:
                 "previous_scope": previous_scope,
                 "history": history,
                 "pending_clarification": pending_clarification,
+                "thread_id": thread_id,
+                "request_id": request_id,
+                "trace_id": trace_id,
             }
         )
         source = {
@@ -129,77 +136,74 @@ class FakeChatService:
                 "requested_groups": [],
             },
             "inherited_fields": ["company", "year"],
-            "multihop": {
-                "enabled": True,
-                "selected": True,
-                "plan": {"private_prompt": "never-return-this"},
-            },
             "agent": {
-                "name": "bounded_financial_react",
-                "protocol": "reason_act_observe",
+                "name": "langgraph_financial_agent",
+                "backend": "langgraph",
                 "selected": True,
                 "status": "completed",
-                "tools": ["document_search", "financial_calculator"],
-                "max_actions": 10,
-                "actions_used": 1,
-                "stop_reason": "all_requirements_complete",
-                "events": [
+                "route": "langgraph_react",
+                "tools": [
+                    "search_financial_documents",
+                    "financial_calculator",
+                    "get_financial_statement",
+                ],
+                "tool_calls": ["search_financial_documents", "financial_calculator"],
+                "tool_call_details": [
                     {
-                        "step": 1,
-                        "reason": {
-                            "decision": "collect_evidence",
-                            "evidence_type": "numeric",
+                        "id": "call-1",
+                        "name": "search_financial_documents",
+                        "arguments": {
+                            "ticker": "MSFT",
+                            "filing_year": "2024",
+                            "doc_type": "10K",
+                            "query": "total revenue",
                         },
-                        "action": {
-                            "tool": "document_search",
-                            "arguments": {
-                                "requirement_id": "revenue",
-                                "query": "private decomposed query",
-                                "document_type": "10K",
-                                "groups": [["MSFT", "2024"]],
-                            },
+                    },
+                    {
+                        "id": "call-2",
+                        "name": "financial_calculator",
+                        "arguments": {
+                            "operation": "percentage_change",
+                            "fact_id_1": "F1",
+                            "fact_id_2": "F2",
                         },
-                        "observation": {
-                            "status": "completed",
-                            "retrieval_mode": "hybrid",
-                            "candidate_count": 4,
-                            "source_ids": ["S1"],
-                            "fact_ids": ["F1"],
-                            "missing_groups": [],
-                        },
+                    },
+                ],
+                "tool_results": [
+                    {
+                        "name": "search_financial_documents",
+                        "status": "success",
+                        "source_count": 1,
+                        "source_ids": ["S1"],
+                        "validated_fact_count": 1,
+                        "validated_facts": [
+                            {
+                                "fact_id": "F1",
+                                "ticker": "MSFT",
+                                "metric": "Total revenue",
+                                "period": "2024",
+                                "raw_value": "245,122",
+                                "source_id": "S1",
+                            }
+                        ],
+                        "hidden_reasoning": "never serialize this",
+                    }
+                ],
+                "calculator_results": [
+                    {
+                        "operation": "percentage_change",
+                        "formula": "((new - old) / abs(old)) * 100",
+                        "result": "14.93",
+                        "result_unit": "percent",
+                        "input_fact_ids": ["F1", "F2"],
+                        "source_ids": ["S1", "S2"],
                     }
                 ],
             },
             "retrieval": {
-                "mode": "multi_hop",
-                "candidate_count": 4,
-                "verified_statement_rows": 2,
+                "tool": "search_financial_documents",
                 "source_ids": ["S1"],
                 "source_groups": [["MSFT", "2024", "10K"]],
-                "reranker_applied": True,
-                "sources": [
-                    {
-                        "id": "S1",
-                        "ticker": "MSFT",
-                        "fiscal_year": "2024",
-                        "doc_type": "10K",
-                        "source": "MSFT_2024_10K.pdf",
-                        "section": "Item 8",
-                        "dense_score": 0.8,
-                        "rrf_score": 1.0,
-                        "compression": {
-                            "status": "compressed_extractively",
-                            "original_len": 300,
-                            "compressed_len": 120,
-                            "reduction_pct": 60.0,
-                        },
-                    }
-                ],
-            },
-            "generation": {
-                "attempts": 1,
-                "validation_reason": "valid_inline_citations",
-                "raw_output_previews": ["private model output"],
             },
         }
         return ChatResult(
@@ -220,6 +224,13 @@ class ExplodingChatService(FakeChatService):
     def ask(self, *args, **kwargs) -> ChatResult:
         del args, kwargs
         raise RuntimeError("unsafe internal traceback and secret")
+
+
+class LongCitationChatService(FakeChatService):
+    def ask(self, *args, **kwargs):
+        result = super().ask(*args, **kwargs)
+        return replace(result, answer=result.answer.replace("[S1]", "[S12861367010870378893]"),
+                       sources=[{**source, "id": "S12861367010870378893"} for source in result.sources])
 
 
 class FastApiModelTests(unittest.TestCase):
@@ -267,6 +278,22 @@ class FastApiEndpointTests(unittest.TestCase):
             allow_traces=allow_traces,
             cors_origins=[],
         )
+
+    def test_http_and_stream_responses_relabel_citations_with_matching_evidence(self):
+        app = self.make_app(factory=LongCitationChatService)
+        with TestClient(app) as client:
+            body = client.post("/api/chat", json=request_body()).json()
+            with client.stream("POST", "/api/chat/stream", json=request_body()) as response:
+                stream_text = "".join(response.iter_text())
+            match = re.search(r"event: result\nid: \d+\ndata: (.+?)\n\n", stream_text)
+            streamed = json.loads(match.group(1))
+        for output in (body, streamed):
+            self.assertIn("[S1]", output["answer"])
+            self.assertNotIn("12861367010870378893", output["answer"])
+            self.assertEqual(output["answer_format"], "structured-v2")
+            self.assertEqual(output["sources"][0]["id"], "S1")
+            self.assertEqual(output["sources"][0]["internal_id"], "S12861367010870378893")
+            self.assertIn("245,122", output["sources"][0]["evidence_text"])
 
     def test_health_and_catalogue_use_one_lifespan_service(self) -> None:
         app = self.make_app()
@@ -316,19 +343,27 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertNotIn("source_hash", body["sources"][0])
         self.assertNotIn("question", body["trace"])
         self.assertNotIn("retrieval_query", body["trace"])
-        self.assertNotIn("raw_output_previews", body["trace"]["generation"])
+        self.assertNotIn("generation", body["trace"])
         self.assertNotIn("api_key", body["trace"]["reranker"])
-        self.assertEqual(
-            body["trace"]["multihop"], {"enabled": True, "selected": True}
-        )
+        self.assertNotIn("multihop", body["trace"])
         self.assertTrue(body["trace"]["agent"]["selected"])
         self.assertEqual(
-            body["trace"]["agent"]["events"][0]["action"]["tool"],
-            "document_search",
+            body["trace"]["agent"]["backend"], "langgraph"
         )
-        self.assertNotIn("private decomposed query", json.dumps(body["trace"]))
-        self.assertEqual(body["trace"]["retrieval"]["mode"], "multi_hop")
-        self.assertEqual(body["trace"]["retrieval"]["verified_statement_rows"], 2)
+        self.assertEqual(
+            body["trace"]["agent"]["tool_calls"],
+            ["search_financial_documents", "financial_calculator"],
+        )
+        self.assertEqual(
+            body["trace"]["agent"]["calculator_results"][0]["result"], "14.93"
+        )
+        self.assertNotIn("hidden_reasoning", json.dumps(body["trace"]))
+        self.assertEqual(
+            body["trace"]["retrieval"]["tool"], "search_financial_documents"
+        )
+        self.assertEqual(
+            body["trace"]["retrieval"]["source_groups"], [["MSFT", "2024", "10K"]]
+        )
 
         call = FakeChatService.instances[0].calls[0]
         self.assertEqual(call["question"], request_body()["question"])
@@ -490,6 +525,8 @@ class FastApiEndpointTests(unittest.TestCase):
         self.assertIn("text/css", styles.headers["content-type"])
         self.assertEqual(javascript.status_code, 200)
         self.assertIn("javascript", javascript.headers["content-type"])
+        for response in (index, styles, javascript):
+            self.assertEqual(response.headers["cache-control"], "no-cache")
         self.assertEqual(traversal.status_code, 404)
         self.assertNotIn("streamlit", traversal.text.lower())
 

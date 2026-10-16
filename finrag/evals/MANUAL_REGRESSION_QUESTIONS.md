@@ -1,7 +1,7 @@
 # FinRAG manual regression questions
 
-Use this checklist to verify the complete application after retrieval, planning,
-prompt, validation, or orchestration changes. It targets the `phase1-v2` index:
+Use this checklist to verify the complete application after retrieval, prompt,
+validation, or LangGraph changes. It targets the `phase1-v2` index:
 MSFT and TSLA, fiscal years 2024 and 2025, with one 10-K and one Q4 transcript
 for every company-year.
 
@@ -12,13 +12,7 @@ for every company-year.
    says otherwise.
 3. Clear all UI company, year, and document-type filters. The question itself
    should determine scope.
-4. Enable multi-hop execution for section 8:
-
-   ```dotenv
-   FINRAG_MULTIHOP_ENABLED=true
-   ```
-
-5. For every answered question, verify that every citation opens evidence from
+4. For every answered question, verify that every citation opens evidence from
    the requested company, source year, and document type.
 6. Record the decision, latency, cited source IDs, pass/fail result, and notes in
    the results table at the end of this file.

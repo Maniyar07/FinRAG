@@ -41,6 +41,20 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(result.years, ("2024",))
         self.assertFalse(result.all_years)
 
+    def test_presentation_table_does_not_request_a_source_table(self) -> None:
+        result = understand_query(
+            "Compare Microsoft's 2024 and 2025 revenue and present both values in a table."
+        )
+        self.assertTrue(result.wants_table)
+        self.assertFalse(result.wants_complete_table)
+
+    def test_named_filing_table_requests_the_source_table(self) -> None:
+        result = understand_query(
+            "Show Tesla's 2025 10-K table of cash paid for income taxes."
+        )
+        self.assertTrue(result.wants_table)
+        self.assertTrue(result.wants_complete_table)
+
     def test_extracts_asymmetric_company_year_pairs(self) -> None:
         result = understand_query("Compare MSFT 2024 with TSLA 2025 revenue")
         self.assertEqual(result.requested_groups, (("MSFT", "2024"), ("TSLA", "2025")))
@@ -75,6 +89,17 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(result.years, ("2024",))
         self.assertEqual(result.reference_years, ("2023",))
         self.assertEqual(result.unsupported_years, ())
+
+    def test_document_descriptors_do_not_turn_comparative_years_into_missing_filings(self) -> None:
+        for descriptor in ("annual", "quarterly"):
+            with self.subTest(descriptor=descriptor):
+                result = understand_query(
+                    f"Using TSLA's 2024 {descriptor} 10-K, report operating cash flow for comparative year 2023.")
+                self.assertEqual(result.years, ("2024",))
+                self.assertEqual(result.reference_years, ("2023",))
+                self.assertEqual(result.unsupported_years, ())
+        result = understand_query("Using TSLA's 2023 annual 10-K, report 2024 comparative figures.")
+        self.assertEqual(result.unsupported_years, ("2023",))
 
     def test_hyphenated_earnings_call_keeps_guidance_year_as_reference(self) -> None:
         result = understand_query(

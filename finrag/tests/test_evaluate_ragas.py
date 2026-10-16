@@ -10,10 +10,16 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from evals.evaluate_ragas import (
     _clean_answer,
+    _citation_diagnostics,
+    _generate_row,
+    _score_row,
+    _tool_trace,
+    load_gold,
     load_generated_answers,
     run,
     score_one,
     summarize,
+    summarize_generation,
 )
 from src.schemas import Decision, Scope
 
@@ -188,7 +194,199 @@ class EvaluateRagasTests(unittest.TestCase):
         ):
             rows = load_generated_answers(Path("fixed.json"), [_gold_record()])
 
-        self.assertEqual(rows, payload["results"])
+        self.assertEqual(rows[0]["id"], payload["results"][0]["id"])
+        self.assertEqual(rows[0]["expected_decision"], "answered")
+        self.assertTrue(rows[0]["decision_match"])
+        self.assertEqual(rows[0]["retrieved_sources"], payload["results"][0]["retrieved_sources"])
+
+    def test_saved_answer_with_calculator_error_is_not_a_pass(self) -> None:
+        result = _generated_row()
+        result["errors"] = [
+            {
+                "component": "financial_calculator",
+                "message": "Unknown or unvalidated fact IDs.",
+                "error_code": "invalid_fact_reference",
+                "retryable": False,
+            }
+        ]
+        payload = {"run": {"mode": "generation"}, "results": [result]}
+        with (
+            patch.object(Path, "is_file", return_value=True),
+            patch.object(Path, "read_text", return_value=json.dumps(payload)),
+        ):
+            rows = load_generated_answers(Path("fixed.json"), [_gold_record()])
+
+        self.assertEqual(rows[0]["decision"], "answered")
+        self.assertFalse(rows[0]["decision_match"])
+        self.assertFalse(rows[0]["passed"])
+
+    def test_live_answer_with_failed_calculator_is_not_counted_as_success(self) -> None:
+        record = _gold_record()
+        result = SimpleNamespace(
+            decision=Decision.ANSWERED,
+            answer="The calculation could not be completed. [S1]",
+            sources=[{"id": "S1", "evidence_text": "Reported inputs."}],
+            scope=Scope(("MSFT",), ("2025",), "10K"),
+            trace={
+                "agent": {
+                    "tool_results": [
+                        {
+                            "name": "financial_calculator",
+                            "status": "error",
+                            "error": "Unknown or unvalidated fact IDs.",
+                            "error_code": "invalid_fact_reference",
+                            "retryable": False,
+                        }
+                    ]
+                }
+            },
+        )
+        service = Mock()
+        service.ask.return_value = result
+
+        row = _generate_row(service, record)
+        summary = summarize_generation([row])
+
+        self.assertFalse(row["decision_match"])
+        self.assertFalse(row["passed"])
+        self.assertEqual(summary["answered"], 1)
+        self.assertEqual(summary["answered_successfully"], 0)
+        self.assertEqual(summary["failed"], 1)
+
+    def test_gold_accepts_explicit_expected_clarification(self) -> None:
+        record = _gold_record()
+        record.pop("reference")
+        record["expected_decision"] = "clarify"
+        record["expected_outcome"] = "Ask the user to specify the fiscal year."
+        record["scope"] = {"tickers": ["MSFT"], "years": [], "doc_types": []}
+        with (
+            patch.object(Path, "is_file", return_value=True),
+            patch.object(Path, "read_text", return_value=json.dumps([record])),
+        ):
+            rows = load_gold(Path("clarification.json"))
+
+        self.assertEqual(rows[0]["expected_decision"], "clarify")
+
+    def test_expected_clarification_counts_as_pass(self) -> None:
+        record = _gold_record()
+        record.pop("reference")
+        record["expected_decision"] = "clarify"
+        record["expected_outcome"] = "Ask the user to specify the fiscal year."
+        result = SimpleNamespace(
+            decision=Decision.CLARIFY,
+            answer="Which fiscal year do you mean?",
+            sources=[],
+            scope=Scope(("MSFT",), (), None),
+            trace={},
+        )
+        service = Mock()
+        service.ask.return_value = result
+
+        row = _generate_row(service, record)
+        summary = summarize_generation([row])
+
+        self.assertTrue(row["decision_match"])
+        self.assertTrue(row["passed"])
+        self.assertNotIn("error", row)
+        self.assertGreaterEqual(row["generation_latency_ms"], 0)
+        self.assertEqual(summary["expected_clarifications_correct"], 1)
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(row["llm_usage"]["llm_calls"], 0)
+        self.assertEqual(row["llm_usage"]["estimated_cost_usd"], 0.0)
+
+        metric = _Metric()
+        scored = asyncio.run(_score_row(row, {"faithfulness": metric}))
+        self.assertEqual(scored["score_status"], "not_scored_expected_decision:clarify")
+        self.assertEqual(metric.calls, 0)
+
+    def test_generation_errors_are_classified_in_question_report(self) -> None:
+        record = _gold_record()
+        service = Mock()
+        service.ask.side_effect = ValueError("invalid request")
+
+        row = _generate_row(service, record)
+
+        self.assertEqual(row["errors"][0]["component"], "evaluation")
+        self.assertEqual(row["errors"][0]["error_code"], "request_rejected")
+        self.assertEqual(row["errors"][0]["error_type"], "ValueError")
+        self.assertFalse(row["errors"][0]["retryable"])
+
+    def test_citations_are_extracted_and_checked_against_sources(self) -> None:
+        result = _citation_diagnostics(
+            "Revenue was $10 million. [S1] Growth used [S9: Item 8].",
+            [{"id": "S1", "ticker": "MSFT"}],
+        )
+
+        self.assertEqual(result["citation_ids"], ["S1", "S9"])
+        self.assertEqual(result["valid_citation_ids"], ["S1"])
+        self.assertEqual(result["invalid_citation_ids"], ["S9"])
+        self.assertEqual(result["citation_validation"], "invalid")
+
+    def test_tool_trace_keeps_calculator_inputs_and_result(self) -> None:
+        trace = {
+            "agent": {
+                "tool_call_details": [
+                    {"name": "financial_calculator", "arguments": {"operation": "subtract"}}
+                ],
+                "tool_results": [
+                    {
+                        "name": "financial_calculator",
+                        "calculator_result": {
+                            "operation": "subtract",
+                            "result": "12.5",
+                            "input_fact_ids": ["F1", "F2"],
+                        },
+                    }
+                ],
+            }
+        }
+
+        result = _tool_trace(trace)
+
+        self.assertEqual(result["calls"][0]["arguments"]["operation"], "subtract")
+        self.assertEqual(result["calculator_results"][0]["result"], "12.5")
+
+    def test_chat_service_diagnostics_capture_tool_arguments_and_calculation(self) -> None:
+        from src.app.chat_service import ChatService
+
+        messages = [
+            {
+                "type": "ai",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "name": "financial_calculator",
+                        "args": {
+                            "fact_id_1": "F1",
+                            "fact_id_2": "F2",
+                            "operation": "subtract",
+                        },
+                    }
+                ],
+            },
+            {
+                "type": "tool",
+                "name": "financial_calculator",
+                "tool_call_id": "call-1",
+                "content": json.dumps(
+                    {
+                        "operation": "subtract",
+                        "formula": "a - b",
+                        "result": "12.5",
+                        "input_fact_ids": ["F1", "F2"],
+                        "source_ids": ["S1", "S2"],
+                    }
+                ),
+            },
+        ]
+
+        diagnostics = ChatService._agent_tool_diagnostics(messages)
+
+        self.assertEqual(
+            diagnostics["tool_call_details"][0]["arguments"]["fact_id_1"], "F1"
+        )
+        self.assertEqual(diagnostics["calculator_results"][0]["result"], "12.5")
+        self.assertEqual(diagnostics["tool_results"][0]["source_ids"], ["S1", "S2"])
 
     def test_score_input_rejects_incomplete_or_scored_files(self) -> None:
         row = _generated_row()

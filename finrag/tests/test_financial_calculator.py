@@ -5,9 +5,12 @@ from decimal import Decimal
 
 from pydantic import ValidationError
 
-from src.financial.calculator import CalculationOperation, CalculationRequest
+from src.financial.calculator import (
+    CalculationOperation,
+    CalculationRequest,
+    FinancialCalculator,
+)
 from src.financial.models import ValidatedFinancialFact, ValueType
-from src.tools.financial_calculator import FinancialCalculatorTool
 
 
 def fact(
@@ -20,6 +23,7 @@ def fact(
     currency: str | None = "USD",
     scale: str | None = "millions",
     source_id: str = "S1",
+    accounting_basis: str | None = None,
 ) -> ValidatedFinancialFact:
     return ValidatedFinancialFact(
         fact_id=fact_id,
@@ -35,29 +39,30 @@ def fact(
         normalized_unit=unit,
         currency=currency,
         scale=scale,
+        accounting_basis=accounting_basis,
         source_id=source_id,
         evidence_excerpt=f"Revenue {value}",
         validation_checks=("test",),
     )
 
 
-class FinancialCalculatorToolTests(unittest.TestCase):
+class FinancialCalculatorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tool = FinancialCalculatorTool()
+        self.calculator = FinancialCalculator()
 
     def test_percentage_and_absolute_change_handle_different_scales(self) -> None:
         old = fact("F1", "3.3", base_value="3300000000", scale="billions")
         new = fact("F2", "3500", base_value="3500000000", scale="millions", source_id="S2")
         facts = {old.fact_id: old, new.fact_id: new}
 
-        percentage = self.tool.execute(
+        percentage = self.calculator.calculate(
             CalculationRequest(
                 operation=CalculationOperation.PERCENTAGE_CHANGE,
                 input_fact_ids=("F1", "F2"),
             ),
             available_facts=facts,
         )
-        absolute = self.tool.execute(
+        absolute = self.calculator.calculate(
             CalculationRequest(
                 operation=CalculationOperation.ABSOLUTE_CHANGE,
                 input_fact_ids=("F1", "F2"),
@@ -71,6 +76,28 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         self.assertEqual(absolute.result, Decimal("200"))
         self.assertEqual(absolute.scale, "millions")
         self.assertEqual(absolute.substituted_formula, "3500 - 3300")
+
+    def test_missing_accounting_basis_does_not_block_compatible_calculation(self) -> None:
+        first = fact("F1", "100", accounting_basis="null")
+        second = fact("F2", "25", accounting_basis="US GAAP", source_id="S2")
+
+        result = self.calculator.calculate(
+            CalculationRequest(operation="sum", input_fact_ids=("F1", "F2")),
+            available_facts={"F1": first, "F2": second},
+        )
+
+        self.assertEqual(result.result, Decimal("125"))
+        self.assertIsNone(first.accounting_basis)
+
+    def test_distinct_accounting_bases_remain_incompatible(self) -> None:
+        gaap = fact("F1", "100", accounting_basis="US GAAP")
+        non_gaap = fact("F2", "25", accounting_basis="Non-GAAP", source_id="S2")
+
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            self.calculator.calculate(
+                CalculationRequest(operation="sum", input_fact_ids=("F1", "F2")),
+                available_facts={"F1": gaap, "F2": non_gaap},
+            )
 
     def test_percentage_point_and_basis_point_changes(self) -> None:
         old = fact(
@@ -93,14 +120,14 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         )
         facts = {"F1": old, "F2": new}
 
-        points = self.tool.execute(
+        points = self.calculator.calculate(
             CalculationRequest(
                 operation="percentage_point_change",
                 input_fact_ids=("F1", "F2"),
             ),
             available_facts=facts,
         )
-        bps = self.tool.execute(
+        bps = self.calculator.calculate(
             CalculationRequest(
                 operation="basis_point_change",
                 input_fact_ids=("F1", "F2"),
@@ -118,15 +145,15 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         second = fact("F2", "121", source_id="S2")
         facts = {"F1": first, "F2": second}
 
-        summed = self.tool.execute(
+        summed = self.calculator.calculate(
             CalculationRequest(operation="sum", input_fact_ids=("F1", "F2")),
             available_facts=facts,
         )
-        ratio = self.tool.execute(
+        ratio = self.calculator.calculate(
             CalculationRequest(operation="ratio", input_fact_ids=("F2", "F1")),
             available_facts=facts,
         )
-        cagr = self.tool.execute(
+        cagr = self.calculator.calculate(
             CalculationRequest(
                 operation="cagr",
                 input_fact_ids=("F1", "F2"),
@@ -138,6 +165,38 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         self.assertEqual(summed.result, Decimal("221"))
         self.assertEqual(ratio.result, Decimal("1.21"))
         self.assertAlmostEqual(float(cagr.result), 10.0, places=8)
+
+    def test_percentage_of_rounds_after_unit_normalization(self) -> None:
+        expense = fact("F1", "32488", scale="millions")
+        revenue = fact("F2", "281724", scale="millions", source_id="S2")
+
+        result = self.calculator.calculate(
+            CalculationRequest(
+                operation="percentage_of",
+                input_fact_ids=("F1", "F2"),
+                decimal_places=1,
+            ),
+            available_facts={"F1": expense, "F2": revenue},
+        )
+
+        self.assertEqual(result.result, Decimal("11.5"))
+        self.assertEqual(result.result_unit, "percent")
+        self.assertEqual(result.input_fact_ids, ("F1", "F2"))
+        self.assertEqual(result.source_ids, ("S1", "S2"))
+
+    def test_sum_accepts_multiple_validated_fact_ids(self) -> None:
+        facts = {
+            f"F{index}": fact(f"F{index}", str(value), source_id=f"S{index}")
+            for index, value in enumerate((10, 20, 30), start=1)
+        }
+
+        result = self.calculator.calculate(
+            CalculationRequest(operation="sum", input_fact_ids=tuple(facts)),
+            available_facts=facts,
+        )
+
+        self.assertEqual(result.result, Decimal("60"))
+        self.assertEqual(result.input_fact_ids, ("F1", "F2", "F3"))
 
     def test_product_absolute_value_and_percent_complement(self) -> None:
         income = fact("F1", "100")
@@ -154,13 +213,13 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         capex = fact("F3", "-25", source_id="S3")
         facts = {item.fact_id: item for item in (income, tax_rate, capex)}
 
-        complement = self.tool.execute(
+        complement = self.calculator.calculate(
             CalculationRequest(
                 operation="percent_complement", input_fact_ids=("F2",)
             ),
             available_facts=facts,
         )
-        absolute = self.tool.execute(
+        absolute = self.calculator.calculate(
             CalculationRequest(operation="absolute_value", input_fact_ids=("F3",)),
             available_facts=facts,
         )
@@ -172,7 +231,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
             }
         )
         facts["F4"] = complement_fact
-        product = self.tool.execute(
+        product = self.calculator.calculate(
             CalculationRequest(operation="product", input_fact_ids=("F1", "F4")),
             available_facts=facts,
         )
@@ -193,7 +252,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
             scale="millions",
             source_id="S2",
         )
-        result = self.tool.execute(
+        result = self.calculator.calculate(
             CalculationRequest(operation="ratio", input_fact_ids=("F1", "F2")),
             available_facts={"F1": revenue, "F2": shares},
         )
@@ -208,7 +267,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         eur = fact("F2", "100", unit="EUR", currency="EUR")
 
         with self.assertRaisesRegex(ValueError, "Unknown or unvalidated"):
-            self.tool.execute(
+            self.calculator.calculate(
                 CalculationRequest(
                     operation="ratio",
                     input_fact_ids=("F1", "missing"),
@@ -216,7 +275,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
                 available_facts={"F1": usd},
             )
         with self.assertRaisesRegex(ValueError, "denominator is zero"):
-            self.tool.execute(
+            self.calculator.calculate(
                 CalculationRequest(
                     operation="ratio",
                     input_fact_ids=("F1", "F0"),
@@ -224,7 +283,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
                 available_facts={"F1": usd, "F0": zero},
             )
         with self.assertRaisesRegex(ValueError, "incompatible"):
-            self.tool.execute(
+            self.calculator.calculate(
                 CalculationRequest(
                     operation="sum",
                     input_fact_ids=("F1", "F2"),
@@ -245,7 +304,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError, message):
-                    self.tool.execute(
+                    self.calculator.calculate(
                         CalculationRequest(
                             operation="percentage_change",
                             input_fact_ids=("F1", newer.fact_id),
@@ -261,7 +320,7 @@ class FinancialCalculatorToolTests(unittest.TestCase):
             with self.subTest(earlier=earlier, later=later):
                 old = fact("F1", "100").model_copy(update={"metric": earlier})
                 new = fact("F2", "110").model_copy(update={"metric": later})
-                result = self.tool.execute(
+                result = self.calculator.calculate(
                     CalculationRequest(
                         operation="percentage_change",
                         input_fact_ids=("F1", "F2"),
@@ -269,6 +328,14 @@ class FinancialCalculatorToolTests(unittest.TestCase):
                     available_facts={"F1": old, "F2": new},
                 )
                 self.assertEqual(result.result, Decimal("10.0"))
+
+    def test_bounds_cannot_be_used_as_exact_calculation_inputs(self) -> None:
+        request = CalculationRequest(operation="absolute_value", input_fact_ids=("F1",))
+        for qualifier in ("over", "exceed", "exceeds", "exceeded", "below", "at least", "up to"):
+            with self.subTest(qualifier=qualifier):
+                bounded = fact("F1", "12").model_copy(update={"value_qualifier": qualifier})
+                with self.assertRaisesRegex(ValueError, "bounded value"):
+                    self.calculator.calculate(request, {"F1": bounded})
 
     def test_request_rejects_wrong_arity_duplicate_ids_and_irrelevant_periods(self) -> None:
         invalid_payloads = (

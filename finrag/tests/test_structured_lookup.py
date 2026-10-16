@@ -1,9 +1,47 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from src.retrieval.structured_lookup import StructuredDocumentLookup
 from src.schemas import Scope
+
+
+@pytest.mark.parametrize("separator", ["***", "---", "___"])
+def test_table_identity_ignores_formatting_separators_and_unrelated_body_keywords(tmp_path, separator):
+    _parent(tmp_path, "cash", ticker="ACME", item="Item 8", section="Statements",
+        body=f"## Cash Flows Statements\n\n**(In millions)**\n\n{separator}\n\n"
+             "<table><tr><th>Metric</th><th>2025</th></tr>"
+             "<tr><td>Operating activities</td><td>100</td></tr></table>")
+    _parent(tmp_path, "derivatives", ticker="ACME", item="Note 8", section="Notes",
+        body="## Gains recognized in income statements on derivatives\n"
+             "<table><tr><th>Metric</th><th>2025</th></tr>"
+             "<tr><td>Cash flow hedges</td><td>999</td></tr></table>")
+    lookup = StructuredDocumentLookup(tmp_path)
+    result = lookup.answer("cash flow statement", Scope(("ACME",), ("2025",), "10K"), wants_complete_table=True)
+    assert result and "| Operating activities | 100 |" in result.answer
+    assert "999" not in result.answer
+    assert lookup.answer("income statement", Scope(("ACME",), ("2025",), "10K"), wants_complete_table=True) is not None
+
+
+def test_row_values_cannot_supply_a_missing_table_subject(tmp_path):
+    _parent(tmp_path, "derivatives", ticker="ACME", item="Note 8", section="Notes",
+        body="## Gains recognized in income statements on derivatives\n"
+             "<table><tr><th>Metric</th><th>2025</th></tr>"
+             "<tr><td>Cash flow hedges</td><td>999</td></tr></table>")
+    assert StructuredDocumentLookup(tmp_path).answer("cash flow statement",
+        Scope(("ACME",), ("2025",), "10K"), wants_complete_table=True) is None
+
+
+def test_tables_without_marked_headers_keep_the_first_data_row_as_data(tmp_path):
+    _parent(tmp_path, "definitions", ticker="ACME", item="Item 1", section="Business",
+        body="## Product metrics\n<table><tr><td>First metric</td><td>First definition</td></tr>"
+             "<tr><td>Second metric</td><td>Second definition</td></tr></table>")
+    result = StructuredDocumentLookup(tmp_path).answer("product metrics", Scope(("ACME",), ("2025",), "10K"), wants_complete_table=True)
+    assert result and result.answer.splitlines()[2] == "| Column 1 | Column 2 |"
+    assert "| First metric | First definition |" in result.answer
+    assert result.sources[0]["table_completeness"]["generated_header"]
+    assert result.sources[0]["table_completeness"]["source_rows"] == result.sources[0]["table_completeness"]["returned_rows"] == 2
 
 
 def test_caption_selects_supplement_instead_of_similar_statement(tmp_path) -> None:

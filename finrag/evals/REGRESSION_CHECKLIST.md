@@ -7,7 +7,7 @@ only to make one question pass.
 
 Date: __________  Git commit: __________  Index: __________
 
-Reranking: on / off  Multi-hop: on / off
+Agent backend: LangGraph  Reranking: on / off
 
 Mark a question `pass` only if its answer addresses the whole request, uses the
 correct company/year/document, and cites supporting evidence. A supported
@@ -37,10 +37,9 @@ $97,690 million (2024) and $94,827 million (2025).
 | 14 | What is Microsoft's stock price right now? | Declines live-data request; does not invent a price. | ☐ Pass ☐ Fail |
 | 15 | What does Apple's 2025 10-K say about revenue? | Reports that Apple is unavailable in the selected index. | ☐ Pass ☐ Fail |
 
-Run all 15 with `FINRAG_MULTIHOP_ENABLED=false`. Then set it to `true`, restart
-the app, and repeat #10 and #12. Compare correctness, citations, and response
-time. Keep multi-hop enabled only if it helps those multi-task questions without
-regressing the full set.
+Run all 15 through the LangGraph backend. There is no backend or multi-hop feature
+flag; compare changes using the same index, model, and reranker settings. Record
+correctness, citations, decision, tool trace, and response time for each run.
 
 Failures and observations:
 
