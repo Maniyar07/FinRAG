@@ -1,0 +1,53 @@
+{
+  "schema_version": "finrag-training-run-v1",
+  "method": "QLoRA with Unsloth",
+  "base_model_requested": "Qwen/Qwen2.5-7B-Instruct",
+  "adapter_config_base": "unsloth/Qwen2.5-7B-Instruct-unsloth-bnb-4bit",
+  "hardware": "NVIDIA L4",
+  "dataset": {
+    "total": 800,
+    "train": 692,
+    "validation": 68,
+    "test": 40,
+    "test_sha256": "ce5ee27758605e8d7cf37583011b42eccaa9af3a6c365c56e4b6b7866cb43f07"
+  },
+  "training": {
+    "epochs": 3,
+    "max_sequence_length": 5376,
+    "per_device_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "learning_rate": 0.0001,
+    "warmup_steps": 8,
+    "optimizer": "adamw_8bit",
+    "scheduler": "cosine",
+    "completion_only_loss": true,
+    "seed": 42
+  },
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "results": {
+    "training_runtime_seconds": 7145.0414,
+    "final_training_loss": 0.05330461006383215,
+    "validation_loss_by_epoch": [
+      0.038936,
+      0.027865,
+      0.027835
+    ]
+  },
+  "adapter": {
+    "sha256": "4056fc42df7ef89f2b74f2b429d6d3ed25b6a7a0ac96f302e3fb8289350882d4",
+    "size_bytes": 161533192
+  }
+}

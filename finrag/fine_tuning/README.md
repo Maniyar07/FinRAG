@@ -25,6 +25,7 @@ fine_tuning/
 |   |   `-- qlora.example.json
 |   |-- requirements.txt
 |   `-- train_qlora.py
+|-- inference/                   # opt-in adapter serving and base/LoRA benchmark
 |-- work/                        # generated datasets and review audits
 |-- artifacts/                   # adapters/checkpoints; created during training
 |-- __main__.py                  # dataset-factory compatibility command
@@ -34,6 +35,11 @@ fine_tuning/
 Dataset construction and model training intentionally have separate dependencies
 and entry points. `python -m fine_tuning ...` remains the stable dataset command;
 `python -m fine_tuning.dataset_factory ...` is its explicit equivalent.
+
+After training, use [`inference/README.md`](inference/README.md) to serve the
+saved adapter and compare base versus LoRA latency, throughput, and output
+format. The FastAPI model endpoint switch is optional and defaults to the
+existing OpenAI configuration.
 
 ## Safety boundary
 

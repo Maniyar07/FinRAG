@@ -1,0 +1,181 @@
+{
+  "schema_version": "finrag-ai-assisted-review-v1",
+  "created_at_utc": "2026-10-16T05:58:13.256371+00:00",
+  "reviewer_type": "ai_assisted_expert",
+  "reviewer_label": "OpenAI Codex evidence-based adjudication",
+  "reviewed_examples": 40,
+  "dataset_sha256": "ce5ee27758605e8d7cf37583011b42eccaa9af3a6c365c56e4b6b7866cb43f07",
+  "prediction_sha256": "1747638701bb2012510a2d207004039c062e280821fe9a768507c52c532358a6",
+  "models": {
+    "Qwen/Qwen2.5-7B-Instruct": {
+      "factual_correct": {
+        "yes": 35,
+        "no": 5,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 87.5
+      },
+      "complete": {
+        "yes": 31,
+        "no": 9,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 77.5
+      },
+      "numeric_correct": {
+        "yes": 29,
+        "no": 2,
+        "na": 9,
+        "applicable": 31,
+        "yes_rate_percent": 93.55
+      },
+      "evidence_supported": {
+        "yes": 36,
+        "no": 4,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 90.0
+      },
+      "hallucination": {
+        "yes": 4,
+        "no": 36,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 10.0
+      },
+      "overall_acceptable": {
+        "yes": 30,
+        "no": 10,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 75.0
+      }
+    },
+    "finrag-lora": {
+      "factual_correct": {
+        "yes": 37,
+        "no": 3,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 92.5
+      },
+      "complete": {
+        "yes": 33,
+        "no": 7,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 82.5
+      },
+      "numeric_correct": {
+        "yes": 28,
+        "no": 2,
+        "na": 10,
+        "applicable": 30,
+        "yes_rate_percent": 93.33
+      },
+      "evidence_supported": {
+        "yes": 38,
+        "no": 2,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 95.0
+      },
+      "hallucination": {
+        "yes": 2,
+        "no": 38,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 5.0
+      },
+      "overall_acceptable": {
+        "yes": 33,
+        "no": 7,
+        "na": 0,
+        "applicable": 40,
+        "yes_rate_percent": 82.5
+      }
+    }
+  },
+  "preferences": {
+    "tie": 23,
+    "finrag-lora": 10,
+    "Qwen/Qwen2.5-7B-Instruct": 7
+  },
+  "flagged_examples": [
+    {
+      "test_index": 1,
+      "preference": "B",
+      "notes": "A reproduces the values but omits the USD-millions scale; B preserves it."
+    },
+    {
+      "test_index": 2,
+      "preference": "B",
+      "notes": "Both misattribute the combined cash, cash equivalents and investments amount to cash and cash equivalents alone; B is less extraneous."
+    },
+    {
+      "test_index": 3,
+      "preference": "A",
+      "notes": "Evidence shows USD 0.83 per share. The reference and B incorrectly apply the table's millions scale to the per-share column."
+    },
+    {
+      "test_index": 6,
+      "preference": "A",
+      "notes": "B gives the correct table-cell value but omits the required millions scale."
+    },
+    {
+      "test_index": 12,
+      "preference": "B",
+      "notes": "A gives both correct cell values but omits the USD-millions scale; B preserves it."
+    },
+    {
+      "test_index": 13,
+      "preference": "B",
+      "notes": "The validated target is the operating-lease discount rate (2.9% and 3.3%). A returns balance-sheet rows; B returns lease-term years."
+    },
+    {
+      "test_index": 16,
+      "preference": "B",
+      "notes": "A lists the correct factors and then contradicts itself with an unsupported insufficient-evidence statement."
+    },
+    {
+      "test_index": 19,
+      "preference": "B",
+      "notes": "A states the dependency but omits the material downside scenario; B includes both."
+    },
+    {
+      "test_index": 20,
+      "preference": "B",
+      "notes": "A gives only a narrow subset; B covers the principal regulated areas and consequences supported by the source."
+    },
+    {
+      "test_index": 22,
+      "preference": "B",
+      "notes": "A falsely leads with 'not established' and then states the supported forecast; B answers directly."
+    },
+    {
+      "test_index": 23,
+      "preference": "A",
+      "notes": "A covers the design, DMA, enforcement and business-impact risks; B omits the principal consequences."
+    },
+    {
+      "test_index": 26,
+      "preference": "A",
+      "notes": "Both include the 51% Premium result but omit the requested video-upload result of 34%; A at least covers a second LinkedIn business point."
+    },
+    {
+      "test_index": 30,
+      "preference": "B",
+      "notes": "A omits the Model S/X wind-down and Optimus production shift; B covers the supported future vision and initiatives."
+    },
+    {
+      "test_index": 32,
+      "preference": "A",
+      "notes": "B drops the accounting-negative signs and reports a positive absolute change while retaining a negative percentage; A is correct."
+    }
+  ],
+  "limitations": [
+    "This is an AI-assisted expert review, not an independent human review.",
+    "A human owner should spot-check flagged examples before production acceptance.",
+    "Format compliance was measured separately and was not used to score content."
+  ]
+}

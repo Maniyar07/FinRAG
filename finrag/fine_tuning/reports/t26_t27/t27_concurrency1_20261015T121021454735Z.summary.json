@@ -1,0 +1,53 @@
+{
+  "schema_version": "finrag-serving-benchmark-v2",
+  "created_at_utc": "2026-10-15T12:10:22.301229+00:00",
+  "dataset": "/content/finrag/fine_tuning/work/sft_final_800/test.jsonl",
+  "dataset_sha256": "ce5ee27758605e8d7cf37583011b42eccaa9af3a6c365c56e4b6b7866cb43f07",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "concurrency": 1,
+  "server_max_num_seqs": 2,
+  "load_mode": "parallel_capacity",
+  "max_tokens": 2048,
+  "models": {
+    "Qwen/Qwen2.5-7B-Instruct": {
+      "requests": 40,
+      "successful_requests": 40,
+      "errors": 0,
+      "wall_seconds": 302.479,
+      "latency_p50_ms": 5175.21,
+      "latency_p95_ms": 19551.29,
+      "requests_per_second": 0.132,
+      "successful_requests_per_second": 0.132,
+      "output_tokens_per_second": 15.78,
+      "format_counts": {
+        "json_valid": 0,
+        "schema_valid": 0,
+        "source_ids_exact": 0,
+        "source_ids_normalized": 0,
+        "possibly_truncated": 0
+      },
+      "source_id_checks_applicable": 0,
+      "schema_error_counts": {}
+    },
+    "finrag-lora": {
+      "requests": 40,
+      "successful_requests": 40,
+      "errors": 0,
+      "wall_seconds": 233.079,
+      "latency_p50_ms": 5942.2,
+      "latency_p95_ms": 8593.06,
+      "requests_per_second": 0.172,
+      "successful_requests_per_second": 0.172,
+      "output_tokens_per_second": 14.433,
+      "format_counts": {
+        "json_valid": 40,
+        "schema_valid": 40,
+        "source_ids_exact": 38,
+        "source_ids_normalized": 38,
+        "possibly_truncated": 0
+      },
+      "source_id_checks_applicable": 38,
+      "schema_error_counts": {}
+    }
+  }
+}

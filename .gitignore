@@ -17,3 +17,38 @@ finrag/evals/gold_builder/work/
 /finrag/*.zip
 # Generated fine-tuning archives
 /finrag/*.zip
+
+# Jupyter temporary files
+**/.ipynb_checkpoints/
+
+# Local experiment tracking
+**/wandb/
+**/mlruns/
+
+# Training checkpoints and model binaries
+finrag/fine_tuning/runs/
+finrag/fine_tuning/checkpoints/
+finrag/fine_tuning/**/checkpoint-*/
+finrag/fine_tuning/**/*.gguf
+finrag/fine_tuning/**/*.safetensors
+
+# Model-server and application logs
+**/vllm.log
+**/*.log
+
+# Test and coverage output
+**/.coverage
+**/coverage.xml
+**/htmlcov/
+
+# IDE and operating-system files
+**/.vscode/
+**/.idea/
+**/.DS_Store
+**/Thumbs.db
+
+# Local Codex and regression-test scratch directories
+finrag/.codex-*/
+finrag/.pytest-*/
+finrag/.status-test-temp-*/
+finrag/tests/tmp*/
