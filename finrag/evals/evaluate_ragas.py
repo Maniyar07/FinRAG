@@ -15,9 +15,10 @@ import os
 import re
 import sys
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import fmean
+from statistics import fmean, median
 from time import perf_counter
 from typing import Any
 
@@ -439,7 +440,8 @@ def _decision_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         row for row in evaluated if row.get("expected_decision") == Decision.CLARIFY.value
     ]
     latency_summary: dict[str, dict[str, float | int | None]] = {}
-    for field in ("generation_latency_ms", "scoring_latency_ms", "total_latency_ms"):
+    for field in ("generation_latency_ms", "scoring_latency_ms", "total_latency_ms",
+                  "client_latency_ms", "server_latency_ms", "queue_latency_ms"):
         values = [
             float(row[field])
             for row in rows
@@ -451,6 +453,7 @@ def _decision_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         latency_summary[field] = {
             "count": len(values),
             "mean": round(fmean(values), 2) if values else None,
+            "median": round(median(values), 2) if values else None,
             "max": round(max(values), 2) if values else None,
             "p95": round(p95, 2) if p95 is not None else None,
         }
@@ -505,8 +508,10 @@ def build_metrics(judge_model: str, embedding_model: str, api_key: str):
         ) from error
 
     import httpx
+    from src.provider_http import provider_ssl_context
+
     client = AsyncOpenAI(api_key=api_key, http_client=httpx.AsyncClient(
-        event_hooks={"response": [record_provider_response]},
+        verify=provider_ssl_context(), event_hooks={"response": [record_provider_response]},
     ))
     llm = llm_factory(judge_model, client=client)
     embeddings = embedding_factory(
@@ -599,6 +604,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         any(isinstance(row.get(name), (int, float)) for name in METRIC_NAMES)
         for row in answered_rows
     )
+    fully_scored = sum(all(isinstance(row.get(name), (int, float)) and math.isfinite(float(row[name]))
+                           for name in METRIC_NAMES) for row in answered_rows)
     final_score = round(fmean(available), 4) if available else None
     answer_success_rate = round(answered / len(rows), 4) if rows else None
     return {
@@ -606,6 +613,9 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "answered": answered,
         "answer_success_rate": answer_success_rate,
         "scored_answered_rows": scored_rows,
+        "fully_scored_answered_rows": fully_scored,
+        "partially_scored_answered_rows": scored_rows - fully_scored,
+        "quality_acceptance": "Not established by decision matches or automated metric averages.",
         "metric_coverage_rate": (
             round(scored_rows / len(rows), 4) if rows else None
         ),
@@ -633,14 +643,26 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "generation_usage": summarize_usage(rows, "llm_usage"),
         "judge_usage": summarize_usage(rows, "judge_usage"),
+        "token_cost": summarize_costs(rows),
         **_decision_diagnostics(rows),
     }
 
 
 def summarize_usage(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     usage = [row[key] for row in rows if isinstance(row.get(key), dict)]
+    expected = len(rows) if key == "llm_usage" else sum(
+        isinstance(row.get(key), dict) or row.get("scoring_latency_ms") is not None
+        for row in rows)
     costs = [item["estimated_cost_usd"] for item in usage if isinstance(item.get("estimated_cost_usd"), (int, float))]
     embedding_costs = [item["embedding_cost_usd"] for item in usage if isinstance(item.get("embedding_cost_usd"), (int, float))]
+    totals, known, issues = [], [], set()
+    for item in usage:
+        parts = (item.get("estimated_cost_usd"), item.get("embedding_cost_usd", 0 if not item.get("embedding_calls") else None))
+        priced = [value for value in parts if isinstance(value, (int, float))]
+        known.append(max(float(item.get("known_token_cost_usd") or 0), sum(priced)))
+        if len(priced) == len(parts) and item.get("cost_complete", True):
+            totals.append(sum(priced))
+        issues.update(item.get("cost_issues") or [])
     stages: dict[str, dict] = {}
     for item in usage:
         for name, metrics in item.get("stages", {}).items():
@@ -656,11 +678,33 @@ def summarize_usage(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     return {
         **{field: sum(int(item.get(field) or 0) for item in usage)
            for field in ("llm_calls", "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens", "embedding_calls", "embedding_input_tokens")},
-        "rows_recorded": len(usage), "stages": stages,
-        "estimated_cost_usd": round(sum(costs), 8) if usage and len(costs) == len(usage) else None,
-        "cost_complete": bool(usage) and len(costs) == len(usage),
-        "embedding_cost_usd": round(sum(embedding_costs), 8) if len(embedding_costs) == len(usage) and usage else None,
+        "rows_recorded": len(usage), "missing_usage_rows": expected - len(usage), "stages": stages,
+        "estimated_cost_usd": round(sum(costs), 8) if usage and len(costs) == expected else None,
+        "cost_complete": bool(usage) and len(costs) == expected,
+        "embedding_cost_usd": round(sum(embedding_costs), 8) if usage and len(embedding_costs) == expected else None,
+        "total_token_cost_usd": round(sum(totals), 8) if usage and len(totals) == expected else None,
+        "known_token_cost_usd": round(sum(known), 8),
+        "token_cost_complete": bool(usage) and len(totals) == expected,
+        "cost_issues": sorted(issues),
+        "pricing_revisions": sorted({item["pricing_revision"] for item in usage if item.get("pricing_revision")}),
     }
+
+
+def summarize_costs(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    application = summarize_usage(rows, "llm_usage")
+    judging = summarize_usage(rows, "judge_usage")
+    missing = application["missing_usage_rows"]
+    missing_judge = judging["missing_usage_rows"]
+    application_cost = application["total_token_cost_usd"] if not missing else None
+    judge_cost = judging["total_token_cost_usd"] if judging["rows_recorded"] else 0.0
+    if missing_judge:
+        judge_cost = None
+    complete = application_cost is not None and judge_cost is not None
+    return {"application_usd": application_cost, "judging_usd": judge_cost,
+        "total_usd": round(application_cost + judge_cost, 8) if complete else None,
+        "known_subtotal_usd": round(application["known_token_cost_usd"] + judging["known_token_cost_usd"], 8),
+        "complete": complete, "missing_generation_usage_rows": missing, "missing_judge_usage_rows": missing_judge,
+        "issues": sorted(set(application["cost_issues"] + judging["cost_issues"]))}
 
 
 def summarize_generation(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -671,8 +715,6 @@ def summarize_generation(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
     )
     usage_summary = summarize_usage(rows, "llm_usage")
-    if usage_summary["rows_recorded"] != len(rows):
-        usage_summary.update(estimated_cost_usd=None, cost_complete=False)
     return {
         "questions_generated": len(rows),
         "answered": answered,
@@ -682,6 +724,7 @@ def summarize_generation(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "passed": passed,
         "failed": len(rows) - passed,
         "llm_usage": usage_summary,
+        "token_cost": summarize_costs(rows),
         **_decision_diagnostics(rows),
     }
 
@@ -700,19 +743,20 @@ def save_checkpoint(
     payload = {
         "schema_version": "2.0",
         "run": {
+            "pass_definition": "passed/decision_match measure the generation contract; they do not certify factual correctness or release acceptance.",
             "updated_at_utc": datetime.now(timezone.utc).isoformat(),
             "index_version": index_version,
             "judge_model": judge_model,
             "dataset": str(dataset),
             "mode": mode,
             "evaluation_path": (
-                "ChatService.ask"
+                "HTTP POST /api/chat" if mode.startswith("http_") else "ChatService.ask"
                 if mode in {"live", "generation"}
                 else "saved answers"
             ),
             "score_input": str(score_input) if score_input is not None else None,
         },
-        "summary": summarize_generation(rows) if mode == "generation" else summarize(rows),
+        "summary": summarize_generation(rows) if mode.endswith("generation") else summarize(rows),
         "results": rows,
     }
     temporary_path = path.with_name(f".{path.name}.tmp")
@@ -754,6 +798,8 @@ def _generate_row(service: Any, record: dict[str, Any]) -> dict[str, Any]:
         "decision": "error",
         "decision_match": False,
         "passed": False,
+        "generation_passed": False,
+        "quality_passed": None,
         "answer": "",
         "retrieved_contexts": [],
         "retrieved_sources": [],
@@ -817,6 +863,7 @@ def _generate_row(service: Any, record: dict[str, Any]) -> dict[str, Any]:
                 decision == expected_decision and not _has_generation_errors(row)
             )
             row["passed"] = row["decision_match"]
+            row["generation_passed"] = row["passed"]
             if not _clean_answer(row["answer"]):
                 raise RuntimeError("ChatService returned an empty answer.")
             if decision == "answered" and not contexts:
@@ -840,12 +887,31 @@ def _generate_row(service: Any, record: dict[str, Any]) -> dict[str, Any]:
         finally:
             generation_latency_ms = round((perf_counter() - started) * 1000, 2)
             row["generation_latency_ms"] = generation_latency_ms
-            row["llm_usage"] = asdict(
-                usage.snapshot(latency_ms=generation_latency_ms)
-            )
+            if getattr(service, "evaluation_transport", None) == "http":
+                server = service.request_metrics
+                row["transport"] = "http"
+                row["http_status"] = service.http_status
+                row["client_latency_ms"] = generation_latency_ms
+                row["server_latency_ms"] = server.get("latency_ms") if server else None
+                row["queue_latency_ms"] = server.get("stages", {}).get("finrag.api_queue", {}).get("latency_ms") if server else None
+                row["llm_usage"] = server
+            else:
+                row["transport"] = "service"
+                row["llm_usage"] = asdict(usage.snapshot(latency_ms=generation_latency_ms))
             row["scoring_latency_ms"] = None
             row["total_latency_ms"] = generation_latency_ms
     return row
+
+
+def _generate_rows(service, records, concurrency):
+    if concurrency == 1:
+        for record in records:
+            yield _generate_row(service, record)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = [pool.submit(_generate_row, service, record) for record in records]
+            for future in as_completed(futures):
+                yield future.result()
 
 
 def _fresh_score_row(saved: dict[str, Any]) -> dict[str, Any]:
@@ -858,6 +924,7 @@ def _fresh_score_row(saved: dict[str, Any]) -> dict[str, Any]:
         "citation_validation", "tool_trace", "trace", "errors",
         "generation_latency_ms", "scoring_latency_ms", "total_latency_ms",
         "llm_usage",
+        "transport", "http_status", "client_latency_ms", "server_latency_ms", "queue_latency_ms",
     )
     row = {field: saved.get(field) for field in fields}
     row["expected_decision"] = row.get("expected_decision") or Decision.ANSWERED.value
@@ -887,12 +954,15 @@ def _fresh_score_row(saved: dict[str, Any]) -> dict[str, Any]:
         and not _has_generation_errors(row)
     )
     row["passed"] = row["decision_match"]
+    row["generation_passed"] = row["passed"]
+    row["quality_passed"] = None
     return row
 
 
 async def _score_row(
     row: dict[str, Any], metrics: dict[str, Any]
 ) -> dict[str, Any]:
+    row["quality_passed"] = None
     if _has_generation_errors(row):
         row["score_status"] = "not_scored_generation_error"
         return row
@@ -925,9 +995,13 @@ async def _score_row(
             contexts=contexts, reference=str(row["reference"]),
         )
     row.update(scores)
-    row["score_status"] = "scored"
+    complete = all(isinstance(scores.get(name), (int, float)) and math.isfinite(float(scores[name])) for name in METRIC_NAMES)
+    row["score_status"] = "scored" if complete else "partially_scored" if any(value is not None for value in scores.values()) else "scoring_failed"
     row["scoring_latency_ms"] = round((perf_counter() - scoring_started) * 1000, 2)
     row["judge_usage"] = asdict(judge_usage.snapshot(latency_ms=row["scoring_latency_ms"]))
+    if metric_errors and row["judge_usage"]["llm_calls"] == 0:
+        row["judge_usage"].update(estimated_cost_usd=None, total_token_cost_usd=None, cost_complete=False,
+            cost_issues=[*row["judge_usage"]["cost_issues"], "Judging failed before provider token usage was returned."])
     generation_latency = row.get("generation_latency_ms")
     row["total_latency_ms"] = round(
         float(generation_latency or 0) + row["scoring_latency_ms"], 2
@@ -952,6 +1026,15 @@ async def run(args: argparse.Namespace) -> int:
     print(f"PASS: validated {len(records)} unique gold questions.")
     if args.validate_only:
         return 0
+    api_base_url = getattr(args, "api_base_url", None)
+    concurrency = getattr(args, "concurrency", 1)
+    http_timeout = getattr(args, "http_timeout", None)
+    if concurrency < 1 or (concurrency != 1 and not api_base_url):
+        raise ValueError("--concurrency must be positive; concurrent evaluation requires --api-base-url.")
+    if http_timeout is not None and (not math.isfinite(http_timeout) or http_timeout <= 0):
+        raise ValueError("--http-timeout must be finite and positive.")
+    if args.score_input and api_base_url:
+        raise ValueError("--score-input reuses saved answers and cannot be combined with --api-base-url.")
 
     output = Path(
         args.output
@@ -991,16 +1074,21 @@ async def run(args: argparse.Namespace) -> int:
         print(f"Detailed results: {output}")
         return 0 if all(row.get("decision_match") is True for row in rows) else 1
 
-    # Import the application only when new runtime answers are required.
-    from src.app.chat_service import ChatService
-
     service = None
     metrics = None
     judge_client = None
     rows = []
     mode = "generation" if args.generate_only else "live"
     try:
-        service = ChatService(index_version=args.index_version)
+        if api_base_url:
+            from evals.http_client import HTTPChatService
+            from src.config import REQUEST_DEADLINE_SECONDS
+            service = HTTPChatService(api_base_url, args.index_version,
+                timeout=http_timeout or REQUEST_DEADLINE_SECONDS, concurrency=concurrency)
+            mode = "http_" + mode
+        else:
+            from src.app.chat_service import ChatService
+            service = ChatService(index_version=args.index_version)
         if not args.generate_only:
             from src.config import EMBEDDING_MODEL, OPENAI_API_KEY
 
@@ -1009,12 +1097,13 @@ async def run(args: argparse.Namespace) -> int:
                 EMBEDDING_MODEL,
                 OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", ""),
             )
-        for position, record in enumerate(records, 1):
-            print(f"[{position}/{len(records)}] Q{int(record['id']):03d}")
-            row = _generate_row(service, record)
+        order = {record["id"]: position for position, record in enumerate(records)}
+        for position, row in enumerate(_generate_rows(service, records, concurrency), 1):
+            print(f"[{position}/{len(records)}] Q{int(row['id']):03d}")
             if metrics is not None:
                 row = await _score_row(row, metrics)
             rows.append(row)
+            rows.sort(key=lambda item: order[item["id"]])
             save_checkpoint(
                 output,
                 rows=rows,
@@ -1055,6 +1144,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--judge-model", default="gpt-4o-mini")
+    parser.add_argument("--api-base-url", default=os.getenv("FINRAG_EVAL_API_BASE_URL"),
+        help="Evaluate an existing API over HTTP, including network and API queue time.")
+    parser.add_argument("--concurrency", type=int, default=1, help="Concurrent HTTP requests; default 1.")
+    parser.add_argument("--http-timeout", type=float, help="Client timeout in seconds; defaults to the configured request deadline.")
     parser.add_argument("--limit", type=int, help="Run only the first N questions.")
     parser.add_argument("--ids", nargs="+", type=int, help="Run only selected question IDs.")
     parser.add_argument("--validate-only", action="store_true")

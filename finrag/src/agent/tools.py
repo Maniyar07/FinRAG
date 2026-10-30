@@ -150,7 +150,7 @@ class PlannedRequirement(StrictToolInput):
     metric: str = Field(min_length=2, max_length=240,
         description="One requested financial/product subject, retaining business/segment context. Do not prefix company, source or year (separate typed fields); retain names belonging to an actual product/segment. Independently requested observations need separate requirements.")
     retrieval_query: str | None = Field(default=None, max_length=240,
-        description="Concise search terms for this subject, including equivalent financial terminology where useful. Preserve business context; do not supply an answer or guess numerical values.")
+        description="Concise search terms expressing the actual requested relationship in source terminology. Expand abstract concepts into their economic meaning: productive investment needs concern capital expenditures/assets/capacity, whereas funding concerns liquidity/financing. Preserve business context; do not supply an answer or guess values.")
     evidence_question: str | None = Field(default=None, max_length=500,
         description="Standalone question for this requirement, preserving yes/no polarity and every requested detail. It must ask only what this source can establish, not the entire multi-source question.")
     qualifiers: list[str] = Field(default_factory=list, max_length=12,
@@ -209,6 +209,8 @@ class PlannedRequirement(StrictToolInput):
             })
         ):
             object.__setattr__(self, "value_type", ValueType.PER_SHARE)
+        if re.fullmatch(r"(?:total\s+)?gross\s+profit", self.metric, re.I):
+            object.__setattr__(self, "value_type", ValueType.CURRENCY)
         return self
 
     @field_validator("value_type", mode="before")
@@ -237,6 +239,8 @@ class PlannedRequirement(StrictToolInput):
 
 
 class PlannedCalculation(StrictToolInput):
+    object_id: str | None = Field(default=None, pattern=r"^o[1-9][0-9]*$",
+        description="The requested calculation output this formula produces.")
     operation: CalculationOperationName = Field(description="percentage_of means X as a percentage of Y (numerator then denominator, same period allowed); ratio divides X by Y. difference subtracts second from first. absolute_change, percentage_change and CAGR take earlier then later. All binary operations require two distinct requirement IDs.")
     input_requirement_ids: list[str] = Field(min_length=1, max_length=20,
         description="Ordered distinct requirement IDs already in requirements. Temporal binary changes need two separately planned reported-period facts.")
@@ -260,7 +264,22 @@ class PlannedCalculation(StrictToolInput):
         return self
 
 
+class RequestedObject(StrictToolInput):
+    """One requested output, distinct from its supporting evidence inputs."""
+    object_id: str = Field(pattern=r"^o[1-9][0-9]*$")
+    quote: str = Field(min_length=3, max_length=1000,
+        description="Minimal exact original request phrase asking for this output. Units, scale and citations belong to a scalar, not a separate explanation. Preserve explicitly requested explanations as distinct outputs.")
+    kind: Literal["fact", "narrative", "statement", "calculation"] = Field(
+        description="A scalar, explanation/list, source table, or derived result. A category breakdown is a table/list, not a single aggregate fact. Calculate/compute requests require calculation outputs with explicit operands.")
+    subject: str = Field(min_length=2, max_length=240,
+        description="Name the requested OUTPUT: its specific metric, explanation/list topic, table title with grouping dimensions, or calculated result. Preserve the distinction between a metric and an explanation about it. A company name or underlying business alone is not an output label.")
+    reported_period: str | None = Field(default=None, max_length=80)
+    calculation: PlannedCalculation | None = Field(default=None,
+        description="For a calculation output, supply its operation and numeric requirement IDs, including ratios/margins and growth percentages. Null for source-reported facts, lists and tables.")
+
+
 class RequestPlanInput(StrictToolInput):
+    requested_objects: list[RequestedObject] = Field(default_factory=list, max_length=40)
     calculation_intent: str | None = Field(default=None, max_length=600,
         description="First distinguish source-reported observations/changes from NEW arithmetic requested by the user. Identify only the clauses requiring derived results and their operands; otherwise say no new arithmetic is requested. Stating values does not require absolute_value. Do not infer units before evidence.")
     narrative_subject: str | None = Field(default=None, min_length=2, max_length=160,
@@ -269,7 +288,7 @@ class RequestPlanInput(StrictToolInput):
     calculations: list[PlannedCalculation] = Field(default_factory=list, max_length=20,
         description="Only NEW arithmetic requested in calculation_intent, using the declared numeric requirement IDs. Source-reported changes and stating values require no calculations. Include every requested difference, ratio or computed change, with compatible evidence-backed operands.")
     synthesis: str | None = Field(default=None, max_length=500,
-        description="Requested interpretation across the planned evidence, if any. Preserve the user's synthesis question here; it is not clarification or a separate source fact.")
+        description="Requested QUALITATIVE interpretation across the evidence, if any. Null for arithmetic-only requests and tables of values; calculations already produce results and formulas. Preserve a requested trend explanation or qualitative comparison, not a separate source fact.")
     clarification: str | None = Field(default=None, max_length=500,
         description="Null for a resolved request. Only ask for a missing user parameter; never place caveats, the original research question, or a requested synthesis here.")
 
@@ -278,6 +297,11 @@ class RequestPlanInput(StrictToolInput):
         ids = [item.requirement_id for item in self.requirements]
         if len(ids) != len(set(ids)):
             raise ValueError("requirement_id values must be unique.")
+        outputs = {item.object_id: item for item in self.requested_objects}
+        if len(outputs) != len(self.requested_objects):
+            raise ValueError("Requested output IDs must be unique.")
+        if outputs and any(item.object_id not in outputs for item in self.requirements):
+            raise ValueError("Every evidence requirement must reference an actual requested object.")
         if not self.clarification and not self.requirements:
             raise ValueError("A plan needs requested evidence requirements.")
         unknown = {
@@ -305,8 +329,10 @@ class RequestPlanInput(StrictToolInput):
             ])
         canonical, aliases, requirements = {}, {}, []
         for item in self.requirements:
-            key = (item.ticker, item.source_year, item.doc_type, item.kind, item.reported_period,
-                   item.metric.casefold(), tuple(sorted(item.qualifiers)), item.value_type,
+            if item.object_id in outputs and outputs[item.object_id].kind == "calculation" and item.requirement_id not in calculation_inputs:
+                continue  # The formula supplies this output; retrieve only its operands.
+            key = (item.object_id, item.subject, item.ticker, item.source_year, item.doc_type, item.kind, item.reported_period,
+                   None if item.object_id in outputs and outputs[item.object_id].kind == "fact" else item.metric.casefold(), tuple(sorted(item.qualifiers)), item.value_type,
                    item.evidence_question if item.kind != "fact" else None)
             if key in canonical:
                 aliases[item.requirement_id] = canonical[key]
@@ -321,6 +347,14 @@ class RequestPlanInput(StrictToolInput):
                for key in calculation.input_requirement_ids):
             raise ValueError("Calculation inputs must reference numeric fact requirements.")
         for calculation in self.calculations:
+            if outputs and calculation.object_id not in outputs:
+                raise ValueError("Every formula must reference its requested calculation output.")
+            if outputs and outputs[calculation.object_id].kind != "calculation":
+                raise ValueError("A derived output is a calculation, not a separately reported fact.")
+            if outputs and any(by_id[key].object_id == calculation.object_id
+                    and normalize_financial_term(by_id[key].metric) == normalize_financial_term(outputs[calculation.object_id].subject)
+                    for key in calculation.input_requirement_ids):
+                raise ValueError("A calculation cannot depend on its own result. Plan its reported operands instead.")
             types = {by_id[key].value_type for key in calculation.input_requirement_ids
                      if by_id[key].value_type is not None}
             if calculation.operation not in {"product", "absolute_value", "percent_complement"} and len(types) > 1:
@@ -330,13 +364,13 @@ class RequestPlanInput(StrictToolInput):
                     and len({by_id[key].ticker for key in calculation.input_requirement_ids}) > 1):
                 raise ValueError("Temporal changes require one company; use difference for a cross-company subtraction.")
         if not self.clarification and any(
-            not re.search(
+            len(set(re.findall(
                 r"(?<!\d)(?:19|20)\d{2}(?!\d)",
                 item.reported_period or "",
-            )
+            ))) != 1
             for item in self.requirements if item.kind == "fact"
         ):
-            raise ValueError("Numeric requirements must specify a reported period with its fiscal year.")
+            raise ValueError("Numeric requirements must specify one reported period with its fiscal year. Split multiple reported years into separate facts.")
         ordered_calculations = list(self.calculations)
         for index, calculation in enumerate(self.calculations):
             if calculation.operation in {"absolute_change", "percentage_change", "percentage_point_change", "basis_point_change", "cagr"}:
@@ -356,105 +390,20 @@ class RequestPlanInput(StrictToolInput):
         object.__setattr__(self, "calculations", list({
             (item.operation, tuple(item.input_requirement_ids), item.periods, item.decimal_places): item for item in ordered_calculations
         }.values()))
+        for output in self.requested_objects:
+            if output.kind == "calculation":
+                if not any(item.object_id == output.object_id for item in self.calculations):
+                    raise ValueError(f"Requested calculation {output.subject!r} needs a formula and numeric operands.")
+            elif not any(item.object_id == output.object_id and item.kind == output.kind for item in self.requirements):
+                raise ValueError(f"Requested output {output.subject!r} is missing from the evidence plan.")
         return self
-
-    def complete_explicit_calculations(self, question: str) -> "RequestPlanInput":
-        """Compile explicitly requested arithmetic from typed numeric requirements."""
-        text = " ".join(question.casefold().split())
-        operations: list[str] = []
-        if re.search(r"\b(?:percentage|percent)\s+(?:increase|decrease|change)\b|\bpercentage terms?\b", text):
-            operations.append("percentage_change")
-        if re.search(r"\b(?:dollar|absolute)\s+(?:increase|decrease|change|difference)\b|\b(?:increase|decrease|change)\s+in\s+(?:both\s+)?dollars?\b", text):
-            operations.append("absolute_change")
-        if re.search(r"\b(?:calculate|compute|find|show|state)\b.{0,80}\bdifference\b", text):
-            operations.append(
-                "difference"
-                if len({item.ticker for item in self.requirements}) > 1
-                else "absolute_change"
-            )
-        if re.search(r"\bas\s+(?:a\s+)?percentage\s+of\b", text):
-            operations.append("percentage_of")
-        if re.search(r"\b(?:calculate|compute|find)\b.{0,60}\bratio\b", text):
-            operations.append("ratio")
-        if re.search(r"\b(?:calculate|compute|find)?\s*cagr\b|compound annual growth rate", text):
-            operations.append("cagr")
-        operations = list(dict.fromkeys(operations))
-        if not operations:
-            return self
-
-        facts = [item for item in self.requirements if item.kind == "fact"]
-        calculations = list(self.calculations)
-        rounding = re.search(r"\b(\d{1,2}|one|two|three|four|five|six)\s+decimal places?\b", text)
-        decimal_places = None
-        if rounding:
-            words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
-            decimal_places = words.get(rounding.group(1), int(rounding.group(1)) if rounding.group(1).isdigit() else None)
-
-        temporal_groups: dict[tuple[str, frozenset[str]], list[PlannedRequirement]] = {}
-        for item in facts:
-            temporal_groups.setdefault(
-                (item.ticker, frozenset(normalize_financial_term(item.metric))), []
-            ).append(item)
-        temporal_pairs = []
-        for items in temporal_groups.values():
-            ordered = sorted(items, key=lambda item: tuple(
-                int(value) for value in re.findall(r"(?:19|20)\d{2}|(?<=Q)[1-4]", item.reported_period or "")
-            ) or (0,))
-            periods = {item.reported_period for item in ordered}
-            if len(periods) > 1:
-                temporal_pairs.append((ordered[0], ordered[-1]))
-
-        cross_company_groups: dict[tuple[frozenset[str], str], list[PlannedRequirement]] = {}
-        for item in facts:
-            cross_company_groups.setdefault(
-                (frozenset(normalize_financial_term(item.metric)), item.reported_period or ""), []
-            ).append(item)
-        cross_company_pairs = [
-            (items[0], items[1]) for items in cross_company_groups.values()
-            if len({item.ticker for item in items}) > 1
-        ]
-
-        for operation in operations:
-            pairs = (
-                cross_company_pairs
-                if operation == "difference" and cross_company_pairs
-                else temporal_pairs
-                if operation in {"absolute_change", "percentage_change", "cagr"}
-                else [(facts[0], facts[1])]
-                if operation in {"percentage_of", "ratio"} and len(facts) == 2
-                else []
-            )
-            for earlier, later in pairs:
-                input_ids = [earlier.requirement_id, later.requirement_id]
-                periods = None
-                if operation == "cagr":
-                    years = [int(value) for item in (earlier, later)
-                             for value in re.findall(r"(?:19|20)\d{2}", item.reported_period or "")]
-                    if len(years) != 2 or years[1] <= years[0]:
-                        continue
-                    periods = years[1] - years[0]
-                if any(item.operation == operation and item.input_requirement_ids == input_ids
-                       for item in calculations):
-                    continue
-                calculations.append(PlannedCalculation(
-                    operation=operation,
-                    input_requirement_ids=input_ids,
-                    periods=periods,
-                    decimal_places=decimal_places,
-                ))
-        if not calculations:
-            raise ValueError(
-                "The request explicitly asks for arithmetic, but the plan does not contain compatible numeric operands."
-            )
-        return self.model_copy(update={
-            "calculation_intent": self.calculation_intent or question,
-            "calculations": calculations,
-        })
 
     def validate_scope(self, scope: Scope, *, bind_single_source: bool = False) -> "RequestPlanInput":
         """Use one source-scope invariant during planning and tool execution."""
         if self.clarification:
             return self
+        if any(item.kind == "statement" and item.doc_type != "10K" for item in self.requirements):
+            raise ValueError("The source-table tool supports 10-K tables. Transcript observations need fact or narrative requirements, not a financial-statement lookup.")
         requirements = []
         for item in self.requirements:
             years = {year for ticker, year, document_type in scope.retrieval_groups
@@ -619,6 +568,7 @@ _SOURCE_FIELDS = (
     "score",
     "parent_complete",
     "evidence_mode",
+    "evidence_queries",
 )
 
 
@@ -861,12 +811,12 @@ def _prior_search_state(runtime: ToolRuntime) -> tuple[dict, dict, int]:
                     parents.setdefault(group, set()).add(parent_id)
                     if source.get("parent_complete") is True:
                         complete_parents.setdefault(group, set()).add(parent_id)
-        if name == "search_financial_documents":
+        if name in {"search_financial_documents", "get_financial_statement"}:
             key = (
                 str(arguments.get("ticker", "")).upper(),
                 str(arguments.get("filing_year", "")),
                 _normalized_doc_type(arguments.get("doc_type", "")) or "",
-                str(arguments.get("query", "")).strip().casefold(),
+                str(arguments.get("query") or arguments.get("statement_type", "")).strip().casefold(),
             )
             payloads[key] = payload
     return payloads, {
@@ -1260,14 +1210,15 @@ def create_financial_tools(
                 })
             query = " ".join((query, *(
                 " ".join((
-                    item.metric,
+                    item.metric if not unresolved_ids or item.kind != "narrative" else "",
+                    item.subject or "",
                     item.reported_period or "",
                     *item.qualifiers,
                 ))
                 for item in group_requirements
             )))
             fact_question = _latest_user_question(runtime)
-            preserve_all = preserve_all or len(group_requirements) > 1
+            preserve_all = preserve_all or any(item.kind == "statement" for item in group_requirements)
             groups = tuple(dict.fromkeys(
                 (item.ticker, item.source_year, _normalized_doc_type(item.doc_type))
                 for item in request_plan.requirements
@@ -1323,6 +1274,13 @@ def create_financial_tools(
             remaining_parents = parent_budget - len(used_parents)
             remaining_chars = char_budget - usage["chars"].get(group, 0)
             remaining_tokens = token_budget - usage["tokens"].get(group, 0)
+            if not prior_search and parent_budget > 1 and any(item.kind == "narrative" for item in group_requirements):
+                # Several independent gaps may need different parents. Reserve
+                # their shares inside the same total budget, without extra rounds.
+                reserve = min(parent_budget - 1, max(1, sum(item.kind == 'narrative' for item in group_requirements) - 1))
+                remaining_parents -= reserve
+                remaining_chars -= reserve * (char_budget // parent_budget)
+                remaining_tokens -= reserve * (token_budget // parent_budget)
             if remaining_parents <= 0 or remaining_chars <= 0 or remaining_tokens <= 0:
                 return _json_text({
                     "ticker": ticker,
@@ -1350,6 +1308,7 @@ def create_financial_tools(
         direct = structured_lookup.answer(statement_subject, scope, wants_complete_table=True) if statement_subject and structured_lookup else None
         completeness = {"complete": False, "reason": "structured_table_not_found_or_ambiguous", "truncated": False}
         bundle = None
+        validation = None
         if direct is not None:
             source = direct.sources[0]
             context = f"[SOURCE {source['id']} | TICKER: {ticker} | FISCAL YEAR: {filing_year} | TYPE: 10K]\n{source['evidence_text']}"
@@ -1364,20 +1323,59 @@ def create_financial_tools(
                 retrieval_limits["requirement_queries"] = tuple(dict.fromkeys(
                     " ".join((item.retrieval_query or item.metric, *item.qualifiers))
                     for item in group_requirements))
+                if unresolved_ids and all(item.kind == "narrative" for item in group_requirements):
+                    retrieval_limits["requirement_queries"] = (query,)
+                    if len(group_requirements) > 1:
+                        feedback = {}
+                        for message in reversed(runtime.state.get('messages', ())):
+                            if isinstance(message, ToolMessage) and message.name == 'finalize_financial_answer':
+                                prior = json.loads(message.content)
+                                for item in (prior.get('request_coverage') or {}).get('assessments', []):
+                                    feedback[item['requirement_id']] = ' '.join(item.get('missing_details', []))
+                                feedback.update({key: value for key, value in prior.get('missing_evidence', {}).items() if not feedback.get(key)})
+                                if feedback:
+                                    break
+                        retrieval_limits['requirement_queries'] = tuple(dict.fromkeys(
+                            ' '.join(filter(None, [item.subject, item.retrieval_query, feedback.get(item.requirement_id) or item.metric]))
+                            for item in group_requirements))
+                definitions = []
+                for item in group_requirements:
+                    if item.kind == 'narrative' and {'cost', 'structure'}.issubset(normalize_financial_term(item.metric)):
+                        label = re.search(r'\bcost of [^,;]*?(?:revenues?|sales)\b', item.retrieval_query or query, re.I)
+                        if label:
+                            definitions.append(' '.join(filter(None, [item.subject, label.group(), 'includes'])))
+                retrieval_limits['requirement_queries'] = tuple(dict.fromkeys([
+                    *definitions, *retrieval_limits['requirement_queries']]))
             if request_scope and structured_lookup and doc_type == "10K":
-                retrieval_limits["preferred_parent_ids"] = tuple(dict.fromkeys(
-                    row.source["parent_id"] for item in group_requirements if item.kind == "fact"
+                rows = [row for item in group_requirements if item.kind == "fact"
                     for row in structured_lookup.statement_rows(
                         " ".join((item.metric, *item.qualifiers)), scope,
                         value_years=tuple(re.findall(r"(?:19|20)\d{2}", item.reported_period or "")),
-                        qualifiers=tuple(item.qualifiers), include_ambiguous=True, metric=item.metric)))
-            bundle = retriever.retrieve(query, scope, preserve_all=preserve_all, **retrieval_limits)
-        validation = pipeline.run(
+                        qualifiers=tuple(item.qualifiers), include_ambiguous=True, metric=item.metric)]
+                retrieval_limits["preferred_parent_ids"] = tuple(dict.fromkeys(
+                    row.source["parent_id"] for row in rows))
+                if rows and all(item.kind == "fact" for item in group_requirements) and callable(getattr(pipeline, "recover_table_facts", None)):
+                    sources = list({row.source["evidence_id"]: row.source for row in rows
+                        if row.source["parent_id"] not in retrieval_limits.get("exclude_parent_ids", ())}.values())
+                    sources = [{**source, "id": f"S{index}"} for index, source in enumerate(sources, 1)]
+                    context = "\n\n".join(f"[SOURCE {source['id']} | TICKER: {ticker} | FISCAL YEAR: {filing_year} | TYPE: 10K]\n{source['evidence_text']}" for source in sources)
+                    if (sources and len({source["parent_id"] for source in sources}) <= retrieval_limits.get("max_parents", MAX_CONTEXT_PARENTS)
+                            and len(context) <= retrieval_limits.get("max_chars", MAX_CONTEXT_CHARS)
+                            and count_tokens(context) <= retrieval_limits.get("max_tokens", MAX_CONTEXT_TOKENS)):
+                        requirements = tuple(item.model_dump() for item in group_requirements)
+                        recovered = pipeline.recover_table_facts(sources=sources, permitted_scope=scope, requirements=requirements)
+                        if not fact_coverage(requirements, recovered.valid_facts, sources)["missing_requirement_ids"]:
+                            validation = recovered
+                            bundle = RetrievalBundle(context, sources, scope, len(rows),
+                                covered_groups=scope.groups, diagnostics={"mode": "structured_fact_lookup"})
+            if bundle is None:
+                bundle = retriever.retrieve(query, scope, preserve_all=preserve_all, **retrieval_limits)
+        validation = validation or (pipeline.run(
             question=fact_question,
             sources=bundle.sources,
             permitted_scope=scope,
             requirements=tuple(item.model_dump() for item in group_requirements) if request_scope else (),
-        ) if not request_scope or any(item.kind == "fact" for item in group_requirements) else FactValidationResult()
+        ) if not request_scope or any(item.kind == "fact" for item in group_requirements) else FactValidationResult())
         valid_facts = tuple(validation.valid_facts)
 
         payload = _bundle_payload(
@@ -1656,11 +1654,11 @@ def create_financial_tools(
                     payloads.append((name, json.loads(content)))
                 except json.JSONDecodeError:
                     continue
-        attempts = sum(
-            (message.get("name") if isinstance(message, dict) else getattr(message, "name", None))
-            == "finalize_financial_answer" for message in runtime.state.get("messages", ())
-        )
+        finals = [payload for name, payload in payloads if name == "finalize_financial_answer" and isinstance(payload, dict)]
+        attempts = max((payload.get("final_answer_attempts", 0) for payload in finals), default=0)
+        recovery_requested = any(payload.get("recovery_required") for payload in finals)
         automatic_results = []
+        resolved, selection_revision = [], ""
         try:
             if attempts >= 2:
                 raise ValueError("The answer validation repair is exhausted.")
@@ -1671,10 +1669,10 @@ def create_financial_tools(
             coverage = fact_coverage([item.model_dump() for item in plan.requirements], list(facts.values()), list(sources.values()))
             _, usage, completed_actions = _prior_search_state(runtime)
             recoverable = set(coverage["missing_requirement_ids"]) - usage["refined_requirements"]
-            if (attempts == 0 and recoverable and completed_actions < AGENT_MAX_ACTIONS
+            if (not recovery_requested and recoverable and completed_actions < AGENT_MAX_ACTIONS
                     and sum(usage["tokens"].values()) < MAX_CONTEXT_TOKENS):
                 return _json_text({
-                    "answer_validated": False, "recovery_required": True, "final_answer_attempts": 1,
+                    "answer_validated": False, "recovery_required": True, "final_answer_attempts": attempts,
                     "missing_requirement_ids": sorted(recoverable), "coverage": coverage,
                     "instruction": "Retrieve these missing facts once per source group, using their exact metrics and reported periods as query and their IDs as unresolved_requirement_ids. Then finalize. Do not substitute another table measure or finalize before this bounded recovery.",
                 })
@@ -1687,11 +1685,21 @@ def create_financial_tools(
                             calculations[prior["calculation_id"]] = prior
             statements = {payload["statement_id"]: payload for _, payload in payloads
                           if isinstance(payload, dict) and payload.get("statement_id")}
+            selections = {item.requirement_id: item for item in map(RequirementAnswer.model_validate, answers or [])}
+            selection_revision = hashlib.sha256(_json_text([plan.model_dump(), sources]).encode()).hexdigest()
+            for payload in finals:
+                if payload.get("selection_revision") == selection_revision:
+                    for item in payload.get("selected_answers", []):
+                        selections.setdefault(item["requirement_id"], RequirementAnswer.model_validate(item))
+                for item in payload.get("verified_answers", []):
+                    selections.setdefault(item["requirement_id"], RequirementAnswer.model_validate(item))
             resolved = resolve_evidence_answers(
                 {**plan.model_dump(), "question": _latest_user_question(runtime),
+                 "retained_answers": [item for item in (finals[-1].get("retained_answers", []) if finals else [])
+                                      if item["requirement_id"] not in selections],
                  "verification_feedback": [payload["validation_error"] for name, payload in payloads
                                            if name == "finalize_financial_answer" and isinstance(payload, dict) and payload.get("validation_error")]},
-                [RequirementAnswer.model_validate(answer) for answer in answers or []], facts, sources, statements,
+                list(selections.values()), facts, sources, statements,
             )
             selected_ids = {answer.requirement_id: answer.fact_ids for answer in resolved}
             for planned in plan.calculations:
@@ -1719,9 +1727,27 @@ def create_financial_tools(
                     if match is not None:
                         calculation_ids.append(match)
             result = render_evidence_answer(
-                {**plan.model_dump(), "question": _latest_user_question(runtime)}, resolved,
+                {**plan.model_dump(), "question": _latest_user_question(runtime),
+                 "prior_audit": finals[-1].get('request_coverage') if finals else None,
+                 "audit_fingerprints": finals[-1].get('audit_fingerprints', {}) if finals else {}}, resolved,
                 calculation_ids or [], facts, sources, calculations, statements,
             )
+            missing = set(result["missing_requirement_ids"])
+            if missing == {"synthesis"} and attempts == 0:
+                return _json_text({**result, "answer_validated": False, "final_answer_attempts": attempts + 1,
+                    "automatic_calculator_results": automatic_results,
+                    "validation_error": _json_text(result["request_coverage"]),
+                    "instruction": "Repair the interpretation once from retained verified observations. All source requirements are covered; no further search is needed."})
+            recoverable = (missing & {item.requirement_id for item in plan.requirements}) - usage["refined_requirements"]
+            if (not recovery_requested and recoverable and completed_actions < AGENT_MAX_ACTIONS
+                    and sum(usage["tokens"].values()) < MAX_CONTEXT_TOKENS):
+                return _json_text({
+                    **result, "answer_validated": False, "recovery_required": True,
+                    "missing_requirement_ids": sorted(recoverable), "final_answer_attempts": attempts + 1,
+                    "automatic_calculator_results": automatic_results,
+                    "validation_error": _json_text(result["request_coverage"]),
+                    "instruction": "Retrieve only these unresolved observations once, then rebuild the answer from retained evidence. Preserve verified parts and original scope.",
+                })
             result["final_answer_attempts"] = attempts + 1
             result["automatic_calculator_results"] = automatic_results
             return _json_text(result)
@@ -1730,6 +1756,8 @@ def create_financial_tools(
                 "answer_validated": False, "validation_error": str(error),
                 "automatic_calculator_results": automatic_results,
                 "final_answer_attempts": attempts + 1,
+                "selected_answers": [item.model_dump() for item in resolved],
+                "selection_revision": selection_revision,
                 "final_answer_attempt_exhausted": attempts >= 1,
                 "instruction": "Numeric coverage is automatic: omit numeric summaries and extra requirement entries. Select matching fact IDs only to resolve ambiguity; supply narrative quotes or statement IDs for those requirements. Repair once; never invent evidence.",
             })

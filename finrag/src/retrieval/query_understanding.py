@@ -120,7 +120,7 @@ FINANCIAL_STATEMENT_RE = re.compile(
     r"income\s+statements?|cash[- ]flow\s+statements?)\b",
     re.IGNORECASE,
 )
-DISPLAY_VERB_RE = re.compile(r"\b(show|give|provide|display|present|list)\b", re.IGNORECASE)
+DISPLAY_VERB_RE = re.compile(r"\b(show|give|provide|display|present|list|reproduce|copy|extract|export)\b", re.IGNORECASE)
 TABULAR_DISPLAY_RE = re.compile(
     r"\b(show|give|provide|display|present)\b.{0,60}\b(tabular|table)\b",
     re.IGNORECASE,

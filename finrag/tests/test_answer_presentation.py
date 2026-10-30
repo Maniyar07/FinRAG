@@ -62,8 +62,9 @@ def test_narrative_points_are_grouped_cited_and_independently_verified():
     points = [NarrativePoint(heading="Competition", text="Competition may reduce sales volumes.", quote_indices=[1]),
               NarrativePoint(heading="Acquisitions", text="Acquisitions may disrupt operations.", quote_indices=[3])]
     answer = RequirementAnswer(requirement_id="r1", quotes=[EvidenceQuote(source_id=SOURCE["id"], excerpt=q) for q in quotes], draft_points=points)
-    audit = {"assessments": {"r1": {"reason": "The two complete statements answer the request", "missing_details": [],
-             "point_support": {"0": True, "1": True}, "quote_assessments": {
+    audit = {"assessments": {"r1": {"reason": "The two complete statements answer the request", "missing_details": [], "retained_evidence_complete": True,
+             "point_support": {str(index): {"evidence_spans": [quotes[quote_index]], "unsupported_details": []}
+                               for index, quote_index in enumerate((1, 3))}, "quote_assessments": {
                  str(index): {"reason": "Statement" if index in (1, 3) else "Heading or fragment",
                               "answers_question": index in (1, 3)} for index in range(4)}}}}
     verifier = Mock(return_value=audit)
@@ -86,8 +87,9 @@ def test_unsupported_points_numbers_and_rejected_quote_references_are_not_displa
     answer = RequirementAnswer(requirement_id="r1", quotes=[EvidenceQuote(source_id=SOURCE["id"], excerpt=text)
         for text in ("Costs may rise by $100 million.", "Taylor.")],
         draft_points=[NarrativePoint(heading="Costs", text=f"Costs may rise by ${number} million.", quote_indices=[quote_index])])
-    audit = {"assessments": {"r1": {"reason": "Only the actual cost statement is responsive", "missing_details": [],
-             "point_support": {"0": supported}, "quote_assessments": {
+    audit = {"assessments": {"r1": {"reason": "Only the actual cost statement is responsive", "missing_details": [], "retained_evidence_complete": True,
+             "point_support": {"0": {"evidence_spans": ["Costs may rise by $100 million."],
+                 "unsupported_details": [] if supported else ["The claim is not supported."]}}, "quote_assessments": {
                  "0": {"reason": "Cost statement", "answers_question": True},
                  "1": {"reason": "Fragment", "answers_question": False}}}}}
     model = SimpleNamespace(with_structured_output=lambda *args, **kwargs: SimpleNamespace(invoke=lambda messages: audit))
@@ -106,7 +108,7 @@ def test_quote_audit_is_authoritative_for_responsive_company_actor():
         source_id=SOURCE["id"], excerpt=quote)])
     audit = {"assessments": {"r1": {
         "reason": "The company is the correct actor for the requested partnership.",
-        "missing_details": [],
+        "missing_details": [], "retained_evidence_complete": True,
         "quote_assessments": {"0": {
             "source_subject": "ACME", "source_subject_type": "company",
             "reason": "The statement directly answers the partnership question.",
@@ -138,8 +140,9 @@ def test_selection_and_independent_point_verification_use_the_two_existing_calls
     point = {"heading": "Competition", "text": source["evidence_text"], "quote_indices": [0]}
     selector = Mock(return_value={"answers": {"r1": {"quotes": [{"source_id": SOURCE["id"], "excerpt": source["evidence_text"]}],
         "draft_points": [point]}}})
-    verifier = Mock(return_value={"assessments": {"r1": {"reason": "The point faithfully summarizes the quote", "missing_details": [],
-        "quote_assessments": {"0": {"reason": "Substantive statement", "answers_question": True}}, "point_support": {"0": True}}}})
+    verifier = Mock(return_value={"assessments": {"r1": {"reason": "The point faithfully summarizes the quote", "missing_details": [], "retained_evidence_complete": True,
+        "quote_assessments": {"0": {"reason": "Substantive statement", "answers_question": True}},
+        "point_support": {"0": {"evidence_spans": [source["evidence_text"]], "unsupported_details": []}}}}})
     model = SimpleNamespace(with_structured_output=Mock(side_effect=[SimpleNamespace(invoke=selector), SimpleNamespace(invoke=verifier)]))
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
         plan = {"requirements": [REQUIREMENT]}
@@ -158,8 +161,9 @@ def test_multiple_requirements_share_a_company_heading_and_companies_remain_sepa
     answers = [RequirementAnswer(requirement_id=r["requirement_id"], quotes=[EvidenceQuote(
         source_id=other["id"] if r["ticker"] == "BETA" else source["id"], excerpt=source["evidence_text"])],
         draft_points=[NarrativePoint(heading="Competition", text=source["evidence_text"], quote_indices=[0])]) for r in requirements]
-    audit = {"assessments": {r["requirement_id"]: {"reason": "The respective filing reports competition", "missing_details": [],
-        "quote_assessments": {"0": {"reason": "Responsive statement", "answers_question": True}}, "point_support": {"0": True}} for r in requirements}}
+    audit = {"assessments": {r["requirement_id"]: {"reason": "The respective filing reports competition", "missing_details": [], "retained_evidence_complete": True,
+        "quote_assessments": {"0": {"reason": "Responsive statement", "answers_question": True}},
+        "point_support": {"0": {"evidence_spans": [source["evidence_text"]], "unsupported_details": []}}} for r in requirements}}
     model = SimpleNamespace(with_structured_output=lambda *args, **kwargs: SimpleNamespace(invoke=lambda messages: audit))
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
         result = render_evidence_answer({"requirements": requirements}, answers, [], {}, {source["id"]: source, other["id"]: other}, {}, {})

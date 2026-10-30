@@ -26,6 +26,7 @@ fine_tuning/
 |   |-- requirements.txt
 |   `-- train_qlora.py
 |-- inference/                   # opt-in adapter serving and base/LoRA benchmark
+|-- tracking/                    # MLflow T28 import, safe tracker, and local UI guide
 |-- work/                        # generated datasets and review audits
 |-- artifacts/                   # adapters/checkpoints; created during training
 |-- __main__.py                  # dataset-factory compatibility command
@@ -40,6 +41,9 @@ After training, use [`inference/README.md`](inference/README.md) to serve the
 saved adapter and compare base versus LoRA latency, throughput, and output
 format. The FastAPI model endpoint switch is optional and defaults to the
 existing OpenAI configuration.
+
+Completed T26/T27 summaries can be imported into one organized, local MLflow
+experiment without retraining. See [`tracking/README.md`](tracking/README.md).
 
 ## Safety boundary
 

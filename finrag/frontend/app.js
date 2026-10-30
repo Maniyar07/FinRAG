@@ -23,8 +23,8 @@ function cleanMetrics(candidate) {
   const integer = (value) => Math.floor(number(value));
   const inputTokens = integer(candidate.input_tokens);
   const outputTokens = integer(candidate.output_tokens);
-  const rawCost = candidate.estimated_cost_usd;
-  const parsedCost = rawCost === null || rawCost === undefined ? null : Number(rawCost);
+  const optionalNumber = (value) => value === null || value === undefined
+    ? null : Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
   return {
     latency_ms: number(candidate.latency_ms),
     llm_calls: integer(candidate.llm_calls),
@@ -32,7 +32,11 @@ function cleanMetrics(candidate) {
     cached_input_tokens: Math.min(inputTokens, integer(candidate.cached_input_tokens)),
     output_tokens: outputTokens,
     total_tokens: Math.max(inputTokens + outputTokens, integer(candidate.total_tokens)),
-    estimated_cost_usd: Number.isFinite(parsedCost) && parsedCost >= 0 ? parsedCost : null,
+    estimated_cost_usd: optionalNumber(candidate.estimated_cost_usd),
+    embedding_cost_usd: optionalNumber(candidate.embedding_cost_usd),
+    total_token_cost_usd: optionalNumber(candidate.total_token_cost_usd),
+    client_latency_ms: optionalNumber(candidate.client_latency_ms),
+    embedding_input_tokens: integer(candidate.embedding_input_tokens),
     models: Array.isArray(candidate.models)
       ? candidate.models.map((model) => String(model).slice(0, 120)).slice(0, 8)
       : [],
@@ -661,10 +665,13 @@ function formatEstimatedCost(value) {
 function renderMetrics(metrics) {
   const container = document.createElement("div");
   container.className = "response-metrics";
-  container.setAttribute("aria-label", "Response performance and estimated LLM usage");
+  container.setAttribute("aria-label", "Response performance and estimated token usage");
 
   const latency = document.createElement("span");
-  latency.textContent = formatLatency(metrics.latency_ms);
+  latency.textContent = formatLatency(metrics.client_latency_ms ?? metrics.latency_ms);
+  latency.title = metrics.client_latency_ms === null
+    ? "Server request time, including queue wait."
+    : `Browser request time, including connection, transfer and stream parsing. Server: ${formatLatency(metrics.latency_ms)}.`;
 
   const tokens = document.createElement("span");
   tokens.textContent = `${metrics.total_tokens.toLocaleString()} LLM tokens`;
@@ -673,13 +680,15 @@ function renderMetrics(metrics) {
     `${metrics.cached_input_tokens.toLocaleString()} cached input`,
     `${metrics.output_tokens.toLocaleString()} output`,
     `${metrics.llm_calls.toLocaleString()} model call${metrics.llm_calls === 1 ? "" : "s"}`,
+    `${metrics.embedding_input_tokens.toLocaleString()} embedding input tokens`,
   ].join(" · ");
 
   const cost = document.createElement("span");
-  cost.textContent = formatEstimatedCost(metrics.estimated_cost_usd);
-  cost.title = metrics.estimated_cost_usd === null
-    ? "No configured price matches every model used by this response."
-    : "Estimated from reported LLM tokens; provider billing is authoritative.";
+  cost.textContent = metrics.total_token_cost_usd === null && metrics.estimated_cost_usd !== null
+    ? `LLM ${formatEstimatedCost(metrics.estimated_cost_usd)}` : formatEstimatedCost(metrics.total_token_cost_usd);
+  cost.title = metrics.total_token_cost_usd === null
+    ? "Total token cost is incomplete because some rates or usage are unavailable."
+    : `Estimated chat and embedding token cost. Chat: ${formatEstimatedCost(metrics.estimated_cost_usd)}; embeddings: ${formatEstimatedCost(metrics.embedding_cost_usd)}. Provider billing is authoritative.`;
 
   container.append(latency, tokens, cost);
   return container;
@@ -1108,6 +1117,7 @@ function parseEventFrame(frame) {
 }
 
 async function streamChat(payload, signal) {
+  const started = performance.now();
   const response = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1145,6 +1155,7 @@ async function streamChat(payload, signal) {
     if (done) break;
   }
   if (!finalResult) throw new ApiClientError("The response ended before a final result arrived.");
+  finalResult.metrics = { ...finalResult.metrics, client_latency_ms: performance.now() - started };
   return finalResult;
 }
 

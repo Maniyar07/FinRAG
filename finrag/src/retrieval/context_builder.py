@@ -7,6 +7,7 @@ from src.config import COMPRESSION_ENABLED, COMPRESSION_KEEP_BLOCKS, MAX_CONTEXT
 from src.ingestion.parent_store import ParentStore
 from src.retrieval.compression import compress, compress_to_budget
 from src.retrieval.token_budget import count_tokens, token_counter_name
+from src.retrieval.text_blocks import has_evidence
 from src.observability import trace_component
 from src.schemas import RankedChild, RetrievalBundle, Scope
 
@@ -162,6 +163,7 @@ class ContextBuilder:
         query: str = "",
         preserve_all: bool = False,
         exclude_parent_ids: frozenset[str] = frozenset(),
+        requirement_queries: tuple[str, ...] = (),
     ) -> RetrievalBundle:
         parent_ids, best = self._select_parent_ids(
             ranked_children, scope, len(ranked_children)
@@ -194,13 +196,19 @@ class ContextBuilder:
             source_id = f"S{len(sources) + 1}"
             header = _source_header(source_id, parent.metadata)
             full_body = parent.page_content.strip()
-            keep_parent_whole = preserve_all or len(children_by_parent[parent_id]) > 1
+            if not has_evidence(full_body):
+                attempts.append({'parent_id': parent_id, 'outcome': 'skipped_heading_only'})
+                continue
+            evidence_queries = tuple(dict.fromkeys(query_text for child in ranked_children
+                if child.parent_id == parent_id for query_text in child.metadata.get("evidence_queries", ())))
+            parent_query = " ".join(evidence_queries) or query
+            keep_parent_whole = preserve_all or (not requirement_queries and len(children_by_parent[parent_id]) > 1)
             body = full_body
             stats = {}
-            if COMPRESSION_ENABLED and query:
+            if COMPRESSION_ENABLED and parent_query:
                 body, stats = compress(
                     body,
-                    query,
+                    parent_query,
                     keep_blocks=COMPRESSION_KEEP_BLOCKS,
                     preserve_all=keep_parent_whole,
                 )
@@ -211,6 +219,23 @@ class ContextBuilder:
             evidence_mode = (
                 "full_parent" if body == full_body else "compressed_parent"
             )
+            # Share space across requested observations instead of letting the
+            # first large parent displace the other evidence. Tables and source
+            # paragraphs remain atomic; full-table requests bypass this path.
+            slots = min(max_parents - len(sources), len(requirement_queries))
+            if not keep_parent_whole and slots > 1:
+                existing = "\n\n---\n\n".join(context_parts)
+                focused, focused_stats = compress_to_budget(
+                    full_body, parent_query,
+                    max_chars=(max_chars - len(existing)) // slots - len(header) - 5,
+                    max_tokens=(max_tokens - count_tokens(existing)) // slots - count_tokens(header) - 5,
+                )
+                if focused:
+                    body, stats = focused, focused_stats
+                    block = f"{header}\n{body}"
+                    candidate_context = "\n\n---\n\n".join((*context_parts, block))
+                    evidence_mode = "budget_excerpt" if body != full_body else "full_parent"
+                    initial_chars, initial_tokens = len(candidate_context), count_tokens(candidate_context)
             if initial_chars > max_chars or initial_tokens > max_tokens:
                 if keep_parent_whole:
                     attempts.append({"parent_id": parent_id, "outcome": "skipped_full_parent_budget",
@@ -221,7 +246,7 @@ class ContextBuilder:
                 prefix = f"{existing}{separator}{header}\n"
                 focused, focused_stats = compress_to_budget(
                     full_body,
-                    query,
+                    parent_query,
                     max_chars=max_chars - len(prefix),
                     max_tokens=max_tokens - count_tokens(prefix),
                     keep_blocks=COMPRESSION_KEEP_BLOCKS,
@@ -257,6 +282,9 @@ class ContextBuilder:
                         }
                     )
                     continue
+            if not has_evidence(body):
+                attempts.append({'parent_id': parent_id, 'outcome': 'skipped_heading_only'})
+                continue
             context_parts.append(block)
             child = best[parent_id]
             attempts.append(
@@ -276,6 +304,7 @@ class ContextBuilder:
                     "id": source_id,
                     "evidence_text": body,
                     "full_evidence_text": full_body,
+                    "evidence_queries": evidence_queries,
                     "compression": stats,
                     "rerank_applied": bool(
                         child.metadata.get("rerank_applied")

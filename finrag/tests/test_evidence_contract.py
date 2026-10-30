@@ -5,10 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-from pydantic import Field
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult as ModelResult
 
 from src.agent.graph import build_request_plan, compact_agent_context, create_finrag_agent
 from src.agent.tools import PlannedRequirement, RequestPlanInput, create_financial_tools, _facts_from_tool_messages
@@ -176,8 +173,8 @@ def test_narrative_quotes_must_exist_and_unsupported_summaries_are_rejected():
     model = SimpleNamespace(with_structured_output=lambda *a, **k: SimpleNamespace(
         invoke=lambda messages: {"assessments": [{"requirement_id": req["requirement_id"], "reason": "Stable demand does not establish growth.", "supported": False}]}))
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
-        with pytest.raises(ValueError, match="Unsupported narrative"):
-            render_evidence_answer({"requirements": [req]}, [claim], [], {}, {"S1": source}, {}, {})
+        result = render_evidence_answer({"requirements": [req]}, [claim], [], {}, {"S1": source}, {}, {})
+        assert not result["complete"] and "Management expects growth" not in result["answer"]
 
 
 def test_runtime_source_scope_comes_from_inventory():
@@ -186,7 +183,7 @@ def test_runtime_source_scope_comes_from_inventory():
     assert not understanding.unsupported_years
 
 
-def test_missing_narrative_selections_are_batched_and_still_require_exact_evidence():
+def test_narrative_fields_are_isolated_and_still_require_exact_evidence():
     requirements = [{**requirement(), "requirement_id": key, "kind": "narrative", "metric": metric}
                     for key, metric in (("growth", "reported growth rates"), ("outlook", "management outlook"))]
     source = {**SOURCE, "evidence_text": "Revenue grew 12% and 10% in constant currency. Management expects demand to remain stable."}
@@ -196,15 +193,17 @@ def test_missing_narrative_selections_are_batched_and_still_require_exact_eviden
     auditor = SimpleNamespace(invoke=Mock(return_value={"assessments": [
         {"requirement_id": item["requirement_id"], "reason": "The quote supports the requested information.", "supported": True}
         for item in requirements]}))
-    model = SimpleNamespace(with_structured_output=Mock(side_effect=[selector, auditor]))
+    model = SimpleNamespace(with_structured_output=Mock(side_effect=lambda schema, **kwargs:
+        selector if "answers" in schema["properties"] else auditor))
     plan = {"question": "Report growth and outlook.", "requirements": requirements}
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
         answers = resolve_evidence_answers(plan, [], {}, {"S1": source})
         result = render_evidence_answer(plan, answers, [], {}, {"S1": source}, {}, {})
     assert result["complete"]
-    assert selector.invoke.call_count == 1
+    assert selector.invoke.call_count == auditor.invoke.call_count == 1
     assert "constant currency" in result["answer"]
-    assert len(json.loads(selector.invoke.call_args.args[0][-1].content)["requirements"]) == 2
+    payload = json.loads(selector.invoke.call_args.args[0][-1].content)
+    assert len(payload["requirements"]) == 2 and len(payload["passages"]) == 1
     answers[0].quotes[0].excerpt = "Revenue grew an invented 90 percent."
     with pytest.raises(ValueError, match="quote is absent"):
         render_evidence_answer(plan, answers, [], {}, {"S1": source}, {}, {})
@@ -412,71 +411,13 @@ def test_source_deduplication_keeps_evidence_from_both_searches():
         assert text in displayed[0]["evidence_text"]
 
 
-class ScriptedModel(BaseChatModel):
-    step: int = 0
-    final_mode: str = "explicit"
-    bindings: list[tuple[list[str], str | None]] = Field(default_factory=list)
-
-    @property
-    def _llm_type(self):
-        return "offline_evidence_contract"
-
-    def bind_tools(self, tools, **kwargs):
-        self.bindings.append(([tool.name for tool in tools], kwargs.get("tool_choice")))
-        return self
-
-    def _generate(self, messages, **kwargs):
-        if self.step == 0:
-            name, args = "plan_financial_request", {}
-        elif self.step == 1:
-            name, args = "search_financial_documents", {
-                "ticker": "MSFT", "filing_year": "2025", "doc_type": "10K", "query": "total revenue FY2024 FY2025",
-            }
-        elif self.step == 2 and self.final_mode == "planned_calculation":
-            name, args = "finalize_financial_answer", {}
-        elif self.step == 2:
-            name, args = "financial_calculator", {"operation": "percentage_change", "fact_id_1": "F2024", "fact_id_2": "F2025"}
-            if self.final_mode == "reversed_calculation":
-                args.update(fact_id_1="F2025", fact_id_2="F2024")
-        elif self.step == 3 or self.step == 4 and self.final_mode in {"invalid_fact", "invalid_schema", "duplicate_prose"}:
-            calculation = json.loads(messages[-1].content) if self.step == 3 else {}
-            name, args = "finalize_financial_answer", {
-                "answers": [{"requirement_id": f"revenue_{year}", "fact_ids": [f"F{year}"]} for year in ("2024", "2025")],
-                "calculation_ids": [calculation["calculation_id"]] if calculation.get("calculation_id") else [],
-            }
-            if self.final_mode == "explicit":
-                args = {"ready": True}
-            elif self.final_mode in {"automatic", "reversed_calculation"}:
-                args = {}
-            elif self.final_mode == "duplicate_prose":
-                for answer in args["answers"]:
-                    answer["summary"] = "An unsupported generated value: 999999."
-                args["answers"].extend([
-                    {"requirement_id": "revenue_2025", "fact_ids": None, "summary": "Invented calculation: 1000%."},
-                    {"requirement_id": "extra_calculation", "summary": "Invented calculation: 1000%."},
-                ])
-                args.pop("calculation_ids")
-                args["unavailable_reason"] = "Unused presentation text cannot change supported results."
-            elif self.final_mode == "invalid_fact":
-                args = {"answers": [{"requirement_id": "revenue_2024", "fact_ids": ["Fmissing"]}]}
-            elif self.final_mode == "invalid_schema":
-                args = {"answers": "invalid selection type"}
-        else:
-            raise AssertionError("The validated final answer should stop further model calls.")
-        self.step += 1
-        return ModelResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[
-            {"name": name, "args": args, "id": f"call{self.step}", "type": "tool_call"},
-        ]))])
-
-
-@pytest.mark.parametrize("final_mode", ["explicit", "automatic", "planned_calculation", "reversed_calculation", "duplicate_prose", "invalid_fact", "invalid_schema"])
-def test_real_graph_contract_runs_plan_search_calculator_and_finalizer_offline(final_mode):
+def test_real_graph_contract_runs_plan_search_calculator_and_finalizer_without_a_routing_model():
     scope = Scope(("MSFT",), ("2025",), "10K")
     retriever = SimpleNamespace(retrieve=lambda query, scope, **kwargs: RetrievalBundle(
         "[SOURCE S1 | TICKER: MSFT | FISCAL YEAR: 2025 | TYPE: 10K]\nRevenue 2024 100 2025 120",
         [{**SOURCE, "parent_id": "P1", "parent_complete": True}], scope, 1))
     pipeline = SimpleNamespace(run=lambda **kwargs: FactValidationResult(valid_facts=(fact(), fact("2025", "120"))))
-    model = ScriptedModel(final_mode=final_mode)
+    model = SimpleNamespace(step=0, bindings=[])
     builder = Mock(return_value=RequestPlanInput.model_validate({
         "requirements": [requirement(), requirement("2025")],
         "calculations": [{"operation": "percentage_change", "input_requirement_ids": ["revenue_2024", "revenue_2025"]}],
@@ -494,50 +435,46 @@ def test_real_graph_contract_runs_plan_search_calculator_and_finalizer_offline(f
         "Application-resolved scope (locked): " + json.dumps(locked) + "\nUser question: Compare revenue columns."}]},
         scope=scope, thread_id="offline")
     assert builder.call_args.args[0] == "Compare revenue columns."
-    assert model.bindings[0] == (["plan_financial_request"], "plan_financial_request")
-    assert all("plan_financial_request" not in names for names, _ in model.bindings[1:])
-    assert all(choice == "required" for _, choice in model.bindings[1:])
-    if final_mode in {"invalid_fact", "invalid_schema", "duplicate_prose"}:
-        assert result.decision == Decision.VALIDATION_FAILED, result.trace
-        assert model.step == 5
-        assert result.trace["agent"]["status"] == "validation_failed"
-        return
+    assert model.bindings == [] and model.step == 0
     assert result.decision == Decision.ANSWERED, result.trace
     assert "20.0 percent" in result.answer or "20.00 percent" in result.answer
-    assert model.step == (3 if final_mode == "planned_calculation" else 4)
     assert result.trace["answer_validation"]["reason"] == "validated_evidence_claims"
     assert "999999" not in result.answer and "1000%" not in result.answer
     calculation = result.trace["agent"]["calculator_results"][0]
     assert calculation["calculation_id"].startswith("C")
     assert calculation["planned_input_requirement_ids"] == ["revenue_2024", "revenue_2025"]
-    if final_mode == "reversed_calculation":
-        assert calculation["input_order_adjusted"]
-        assert calculation["requested_fact_ids"] == ["F2025", "F2024"]
-        assert calculation["input_fact_ids"] == ["F2024", "F2025"]
 
 
-class StatementRoutingModel(ScriptedModel):
-    statement_type: str = "balance_sheet"
-
-    def _generate(self, messages, **kwargs):
-        if self.step == 1 and self.bindings[-1][1] == "plan_financial_request":
-            self.step += 1
-            return ModelResult(generations=[ChatGeneration(message=AIMessage(content="Which financial year?"))])
-        if self.step == 0:
-            name, args = "plan_financial_request", {}
-        elif self.step == 1:
-            name, args = "get_financial_statement", {
-                "ticker": "ACME", "filing_year": "2027", "statement_type": self.statement_type}
-        elif self.step == 2 and self.bindings[-1][1] == "required":
-            name, args = "finalize_financial_answer", {}
-        else:
-            # Mirrors a model stopping after successful retrieval when tools
-            # are optional. Terminal validated output must still be able to end.
-            self.step += 1
-            return ModelResult(generations=[ChatGeneration(message=AIMessage(content="Retrieved table."))])
-        self.step += 1
-        return ModelResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[
-            {"name": name, "args": args, "id": f"statement{self.step}", "type": "tool_call"}]))])
+def test_two_companies_retrieve_each_source_once_and_never_mix_facts():
+    scope = Scope(("ACME", "BETA"), ("2025",), "10K")
+    facts = {ticker: fact("2025", str(value), ticker=ticker, fact_id=f"F{index}", source_id=f"S{index}")
+             for index, (ticker, value) in enumerate((("ACME", 100), ("BETA", 200)), 1)}
+    calls = []
+    def retrieve(query, current_scope, **kwargs):
+        ticker = current_scope.tickers[0]
+        calls.append(ticker)
+        item = facts[ticker]
+        return RetrievalBundle("Revenue 2025 " + item.raw_value,
+            [{"id": item.source_id, "ticker": ticker, "fiscal_year": "2025", "doc_type": "10K",
+              "parent_id": ticker, "evidence_text": item.evidence_excerpt}], current_scope, 1)
+    pipeline = SimpleNamespace(run=lambda **kwargs: FactValidationResult(
+        valid_facts=(facts[kwargs["permitted_scope"].tickers[0]],)))
+    plan = RequestPlanInput.model_validate({"requirements": [{**requirement("2025"),
+        "ticker": ticker, "requirement_id": ticker} for ticker in facts]})
+    with patch("src.agent.tools.FinancialFactPipeline", return_value=pipeline):
+        graph = create_finrag_agent(SimpleNamespace(retrieve=retrieve), FinancialCalculator(),
+            permitted_scope=scope, plan_builder=lambda *args: plan)
+    state = graph.invoke({"messages": [("user", "Compare ACME and BETA revenue for FY2025 from their 2025 10-Ks.")]})
+    final = next(json.loads(message.content) for message in state["messages"]
+        if isinstance(message, ToolMessage) and message.name == "finalize_financial_answer")
+    assert sorted(calls) == ["ACME", "BETA"]
+    sources = {source["ticker"]: source["id"] for message in state["messages"]
+        if isinstance(message, ToolMessage) and message.name == "search_financial_documents"
+        for source in json.loads(message.content)["sources"]}
+    assert final["complete"] and set(final["cited_source_ids"]) == set(sources.values())
+    for ticker, value in (("ACME", 100), ("BETA", 200)):
+        assert any(ticker in line and f"{value} million USD" in line and f"[{sources[ticker]}]" in line
+                   for line in final["answer"].splitlines())
 
 
 @pytest.mark.parametrize(("statement_type", "metric"), [
@@ -567,7 +504,7 @@ def test_statement_graph_requires_finalization_and_then_allows_termination(tmp_p
     plan = RequestPlanInput.model_validate({"requirements": [{"requirement_id": "r1", "ticker": "ACME",
         "source_year": "2027", "doc_type": "10K", "metric": metric, "kind": "statement", "qualifiers": [],
         "reported_period": reported_period}]})
-    model = StatementRoutingModel(statement_type=statement_type)
+    model = SimpleNamespace(step=0, bindings=[])
     with patch("src.agent.graph.get_llm_engine", return_value=model):
         graph = create_finrag_agent(retriever, FinancialCalculator(), permitted_scope=scope,
                                     plan_builder=Mock(return_value=plan))
@@ -578,18 +515,18 @@ def test_statement_graph_requires_finalization_and_then_allows_termination(tmp_p
               if isinstance(message, ToolMessage) and message.name == "finalize_financial_answer"]
     assert len(finals) == 1 and finals[0]["answer_validated"] and finals[0]["complete"], finals
     assert "| Reported value | 120 | 100 |" in finals[0]["answer"]
-    assert model.step == 4 and model.bindings[-1][1] == "required"
+    assert model.step == 0 and model.bindings == []
     retriever.retrieve.assert_not_called()
 
 
 def test_graph_clarification_can_finish_without_forced_retrieval():
-    model = StatementRoutingModel(step=0)
+    model = SimpleNamespace(step=0, bindings=[])
     plan = RequestPlanInput(clarification="Which financial year?")
     with patch("src.agent.graph.get_llm_engine", return_value=model):
         graph = create_finrag_agent(SimpleNamespace(), FinancialCalculator(),
                                     plan_builder=Mock(return_value=plan))
     state = graph.invoke({"messages": [{"role": "user", "content": "Show the balance sheet."}]})
-    assert len(model.bindings) == 1 and model.step == 2
+    assert model.bindings == [] and model.step == 0
     assert not state["messages"][-1].tool_calls
 
 
@@ -607,7 +544,7 @@ def test_named_note_tables_preserve_text_cells_and_wide_layout_without_year_head
         "source_year": "2027", "doc_type": "10K", "kind": "statement", "metric": title}]})
     retriever = SimpleNamespace(context_builder=SimpleNamespace(parent_store=SimpleNamespace(root=tmp_path)),
                                retrieve=Mock(side_effect=AssertionError("No model search for stored tables.")))
-    model = StatementRoutingModel(statement_type=title)
+    model = SimpleNamespace(step=0, bindings=[])
     with patch("src.agent.graph.get_llm_engine", return_value=model):
         graph = create_finrag_agent(retriever, FinancialCalculator(), permitted_scope=scope,
                                     plan_builder=Mock(return_value=plan))
@@ -818,7 +755,7 @@ def test_requested_object_contract_merges_extra_prose_or_subrow_requirements(kin
 
 def test_requested_object_quote_cannot_replace_the_planned_evidence_question():
     from copy import deepcopy
-    draft = {"requested_objects": [{"object_id": "o1", "quote": "Explain the commentary", "kind": "narrative",
+    draft = {"requested_objects": [{"object_id": "o1", "quote": "Report total revenue", "kind": "narrative",
         "subject": "commentary", "reported_period": None}], "requirements": [{**requirement(), "object_id": "o1",
             "kind": "narrative", "evidence_question": "What was total revenue?"}]}
     planner = SimpleNamespace(invoke=Mock(return_value=deepcopy(draft)))
@@ -851,13 +788,16 @@ def test_calculation_operands_are_numeric_even_when_table_is_only_output_format(
     assert plan.calculations[0].input_requirement_ids == ["revenue_2024", "revenue_2025"]
 
 
-def test_explicit_arithmetic_is_compiled_when_the_model_omits_calculations():
+def test_requested_calculation_compiles_its_declared_formula():
     question = ("Compare Microsoft's total revenue using its 2024 and 2025 10-K filings. "
                 "Present both values in a table and state the dollar increase.")
-    draft = {"requirements": [
-        {**requirement("2024"), "source_year": "2024"},
-        {**requirement("2025"), "source_year": "2025"},
-    ], "calculations": [], "calculation_intent": "no new arithmetic is requested"}
+    draft = {"requested_objects": [{"object_id": "o1", "quote": "state the dollar increase",
+        "subject": "revenue increase", "kind": "calculation", "calculation": {
+            "operation": "absolute_change", "input_requirement_ids": ["revenue_2024", "revenue_2025"]}}],
+        "requirements": [
+        {**requirement("2024"), "object_id": "o1", "source_year": "2024"},
+        {**requirement("2025"), "object_id": "o1", "source_year": "2025"},
+    ], "calculations": []}
     planner = SimpleNamespace(invoke=Mock(return_value=draft))
     model = SimpleNamespace(with_structured_output=lambda *args, **kwargs: planner)
     with patch("src.agent.graph.get_llm_engine", return_value=model):

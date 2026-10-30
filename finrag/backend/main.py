@@ -347,6 +347,10 @@ def _sanitize_trace(trace: object) -> dict[str, Any]:
     if not isinstance(trace, dict):
         return {}
     sanitized: dict[str, Any] = {}
+    cache = trace.get("answer_cache")
+    if isinstance(cache, dict):
+        sanitized["answer_cache"] = {"hit": bool(cache.get("hit")),
+            "source_trace_id": _clean_text(cache.get("source_trace_id"), max_length=64)}
     for key in ("request_id", "trace_id", "index_version"):
         value = trace.get(key)
         valid_value = (
@@ -609,6 +613,7 @@ def _sanitize_trace(trace: object) -> dict[str, Any]:
                 view["error"] = _clean_text(result.get("error"), max_length=240)
                 view["error_code"] = _clean_text(result.get("error_code"), max_length=80)
                 view["retryable"] = bool(result.get("retryable"))
+                view["resolved_in_final_answer"] = bool(result.get("resolved_in_final_answer"))
             result_views.append(view)
         agent_view["tool_results"] = result_views
 
@@ -694,6 +699,11 @@ def _chat_response(
             embedding_calls=metrics.embedding_calls,
             embedding_input_tokens=metrics.embedding_input_tokens,
             embedding_cost_usd=metrics.embedding_cost_usd,
+            total_token_cost_usd=metrics.total_token_cost_usd,
+            known_token_cost_usd=metrics.known_token_cost_usd,
+            cost_complete=metrics.cost_complete,
+            cost_issues=list(metrics.cost_issues),
+            pricing_revision=metrics.pricing_revision,
         ),
         pending_clarification=_pending_view(result.pending_clarification),
         trace=_sanitize_trace(result_trace) if include_trace and allow_traces else None,
@@ -729,9 +739,15 @@ async def _measured_ask(
             ask_kwargs["thread_id"] = conversation_id
         control = RequestControl(monotonic() + REQUEST_DEADLINE_SECONDS)
         async def work():
+            queued = perf_counter()
             async with limiter or asyncio.Semaphore(1):
-                with request_control(control):
-                    return await asyncio.to_thread(service.ask, question, **ask_kwargs)
+                usage.record_stage("finrag.api_queue", (perf_counter() - queued) * 1000)
+                executing = perf_counter()
+                try:
+                    with request_control(control):
+                        return await asyncio.to_thread(service.ask, question, **ask_kwargs)
+                finally:
+                    usage.record_stage("finrag.api_execution", (perf_counter() - executing) * 1000)
         worker = asyncio.create_task(work())
         if pending_workers is not None:
             pending_workers[worker] = control

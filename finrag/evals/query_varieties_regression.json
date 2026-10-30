@@ -1,0 +1,212 @@
+[
+  {
+    "id": 1,
+    "category": "exact_table",
+    "question": "Reproduce Tesla's consolidated cash flow statement from its 2024 10-K, preserving every row, year column, unit and negative value.",
+    "reference": "Full primary cash flow statement, all reported periods and rows.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "category": "growth",
+    "question": "Calculate Tesla's year-over-year revenue growth percentage for FY2024 from its 2024 10-K. Show the source values and formula.",
+    "reference": "FY2023 96,773 million USD; FY2024 97,690 million USD; percentage change approximately 0.95%.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 3,
+    "category": "margins",
+    "question": "Calculate Microsoft's gross margin, operating margin, and net margin percentages for FY2024 using its 2024 10-K. Show inputs and formulas.",
+    "reference": "Revenue 245,122; gross profit 171,008; operating income 109,433; net income 88,136, all million USD; ratios approximately 69.76%, 44.64%, 35.96%.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 4,
+    "category": "geography",
+    "question": "How was Tesla's FY2024 revenue distributed geographically, using the categories disclosed in its 2024 10-K?",
+    "reference": "United States 47,725; China 20,944; other international 29,021, million USD.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 5,
+    "category": "tax",
+    "question": "What was Tesla's FY2024 effective tax rate, and which items explain its difference from the statutory rate, according to its 2024 10-K?",
+    "reference": "Effective rate 20%; distinguish statutory-rate reconciliation items in Note 13 from year-over-year tax-rate changes.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 6,
+    "category": "risks",
+    "question": "What supplier concentration, component availability, and customer concentration risks does Tesla disclose in its 2024 10-K?",
+    "reference": "Explain evidenced supplier concentration and component availability risks. Credit-risk note states no entity represented 10% or more of total receivables at December 31, 2024 and 2023. Identify this as receivables concentration, not customer revenue concentration. Do not substitute customer creditworthiness or regulatory demand risk for customer concentration.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    },
+    "expected_decision": "insufficient_evidence",
+    "expected_outcome": "Supported risks and a carefully scoped receivables-concentration disclosure; explicitly state any broader customer-revenue concentration evidence gap."
+  },
+  {
+    "id": 7,
+    "category": "comparison",
+    "question": "Using their 2024 10-Ks, how do Microsoft's and Tesla's business models differ in revenue sources, cost structure, and capital requirements?",
+    "reference": "Cover all three dimensions for both entire companies and synthesize differences. Microsoft cloud/AI infrastructure and Tesla factories/equipment investment.",
+    "scope": {
+      "tickers": [
+        "MSFT",
+        "TSLA"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 8,
+    "category": "historical",
+    "question": "How did Microsoft's revenue and net income change over the three years presented in its FY2024 10-K?",
+    "reference": "Revenue FY2022 198270, FY2023 211915, FY2024 245122; net income 72738, 72361, 88136 million USD. Explain trends.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 9,
+    "category": "eps",
+    "question": "Compare the EPS of MSFT and TSLA for both 2024 and 2025 using their respective 10-K reports.",
+    "reference": "Diluted EPS MSFT 11.80 and 13.64 USD/share; TSLA 2.04 and 1.08 USD/share. Clearly identify diluted basis.",
+    "scope": {
+      "tickers": [
+        "MSFT",
+        "TSLA"
+      ],
+      "years": [
+        "2024",
+        "2025"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 10,
+    "category": "snapshot",
+    "question": "Using Microsoft's 2024 10-K, summarize FY2024 revenue, operating income, net income, total assets, and operating cash flow.",
+    "reference": "245122, 109433, 88136, 512163, 118548 million USD respectively.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2024"
+      ],
+      "doc_types": [
+        "10K"
+      ]
+    }
+  },
+  {
+    "id": 11,
+    "category": "transcript",
+    "question": "What did Microsoft management say about Azure growth and AI capacity constraints in its fiscal Q4 2025 earnings-call transcript?",
+    "reference": "Use management transcript evidence with correct growth bases and forward-looking capacity commentary, not analyst questions or 10-K substitution.",
+    "scope": {
+      "tickers": [
+        "MSFT"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "TRANSCRIPT"
+      ]
+    }
+  },
+  {
+    "id": 12,
+    "category": "mixed_sources",
+    "question": "Compare Tesla's discussion of its energy storage business in its 2025 10-K with management's energy storage outlook in its fiscal Q4 2025 earnings-call transcript. Keep filing observations and call outlook separate.",
+    "reference": "Preserve energy storage business scope across both sources; separate historical filing observations from transcript outlook.",
+    "scope": {
+      "tickers": [
+        "TSLA"
+      ],
+      "years": [
+        "2025"
+      ],
+      "doc_types": [
+        "10K",
+        "TRANSCRIPT"
+      ]
+    }
+  }
+]

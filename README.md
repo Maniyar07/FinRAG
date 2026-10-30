@@ -14,6 +14,9 @@ The application lives in [`finrag/`](finrag/). Start with the complete
 For HTTP integration details, see the
 [`FastAPI reference`](finrag/README_FASTAPI.md).
 
+For the saved model artifacts, experiment data, runtime indexes, evaluation
+results, and restoration instructions, see the [project handover](HANDOVER.md).
+
 For a presentation-ready explanation of the business problem, design decisions,
 end-to-end request flow, worked examples, evaluation results, limitations, roadmap,
 and manager Q&A, see the

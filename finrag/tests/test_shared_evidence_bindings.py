@@ -216,8 +216,8 @@ def test_narrative_scope_requires_a_subject_phrase_from_its_own_quotes(quote, pr
         if supported:
             assert render_evidence_answer(plan, answers, [], {}, {"S1": source}, {}, {})["complete"]
         else:
-            with pytest.raises(ValueError, match="Unsupported narrative"):
-                render_evidence_answer(plan, answers, [], {}, {"S1": source}, {}, {})
+            result = render_evidence_answer(plan, answers, [], {}, {"S1": source}, {}, {})
+            assert not result["complete"] and "Evidence gap" in result["answer"]
 
 
 def test_semantic_request_binding_preserves_source_wording():
@@ -350,15 +350,21 @@ def test_numeric_requirements_need_typed_facts_including_calculator_operands():
 
 @pytest.mark.parametrize("interpretation, valid", [
     ("The planned investment responds to demand while resource dependencies constrain expansion.", True),
+    ("The 2025 investment responds to demand and resource dependencies constrain expansion.", True),
+    ("Disclosed investment of $11 billion responds to demand.", True),
     ("Investment will produce 999 additional facilities.", False),
+    ("The investment is expected in FY9999.", False),
 ])
 def test_synthesis_has_provenance_and_cannot_introduce_computed_numbers(interpretation, valid):
-    source = {**SOURCE, "evidence_text": "Investment responds to demand. Expansion depends on land and energy."}
+    source = {**SOURCE, "evidence_text": "Investment of $11.00 billion responds to demand. Expansion depends on land and energy."}
     requirement = {**REQUIREMENT, "kind": "narrative", "metric": "investment and dependencies"}
     answers = [RequirementAnswer(requirement_id="r1", quotes=[EvidenceQuote(source_id="S1", excerpt=source["evidence_text"])])]
     def structured(schema, **kwargs):
         response = {"interpretation": interpretation, "source_ids": ["S1"]} if schema is EvidenceSynthesis else {"assessments": [
-            {"requirement_id": key, "reason": "The evidence supports the interpretation.", "supported": True} for key in ("r1", "synthesis")]}
+            {"requirement_id": key, "reason": "The evidence supports the interpretation.", "supported": True,
+             **({"point_support": {"0": {"evidence_spans": ["Investment of $11.00 billion responds to demand.",
+                 "Expansion depends on land and energy."], "unsupported_details": []}}}
+                if key == "synthesis" else {})} for key in ("r1", "synthesis")]}
         return SimpleNamespace(invoke=lambda messages: response)
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=SimpleNamespace(with_structured_output=structured)):
         plan = {"requirements": [requirement], "synthesis": "How do investment and dependencies frame expansion?"}

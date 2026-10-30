@@ -17,6 +17,12 @@ from src.config import (
     LLM_INPUT_USD_PER_MILLION,
     LLM_OUTPUT_USD_PER_MILLION,
     LLM_PRICING_MODEL,
+    LLM_PRICING_PROVIDER,
+    EMBEDDING_MODEL,
+    EMBEDDING_PRICING_PROVIDER,
+    JUDGE_PRICING_PROVIDER,
+    TOKEN_PRICES,
+    PRICING_REVISION,
 )
 
 
@@ -36,6 +42,11 @@ class RequestMetrics:
     embedding_calls: int = 0
     embedding_input_tokens: int = 0
     embedding_cost_usd: float | None = 0.0
+    total_token_cost_usd: float | None = 0.0
+    known_token_cost_usd: float = 0.0
+    cost_complete: bool = True
+    cost_issues: tuple[str, ...] = ()
+    pricing_revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -60,9 +71,13 @@ class UsageCollector:
         self._cost_complete = True
         self._models: set[str] = set()
         self._stages: dict[str, dict] = {}
+        self._embedding_cost = Decimal("0")
+        self._embedding_cost_complete = True
+        self._cost_issues: set[str] = set()
 
-    def record(self, model: str, usage: _TokenUsage | None) -> None:
+    def record(self, model: str, usage: _TokenUsage | None, *, provider: str | None = None) -> None:
         normalized_model = str(model or "").strip()
+        provider = provider or LLM_PRICING_PROVIDER
         with self._lock:
             stage_name = _ACTIVE_STAGE.get()
             if stage_name == "finrag.chat_request":
@@ -84,6 +99,7 @@ class UsageCollector:
                 stage["usage_complete"] = False
                 stage["estimated_cost_usd"] = None
                 self._cost_complete = False
+                self._cost_issues.add(f"{provider}/{normalized_model}: token usage unavailable")
                 return
 
             self._input_tokens += usage.input_tokens
@@ -93,18 +109,19 @@ class UsageCollector:
             for key in ("input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"):
                 stage[key] += getattr(usage, key)
 
-            if not _matches_pricing_model(normalized_model):
-                stage["estimated_cost_usd"] = None
-                self._cost_complete = False
-                return
-
             uncached_input = usage.input_tokens - usage.cached_input_tokens
-            cost = (
-                Decimal(uncached_input) * LLM_INPUT_USD_PER_MILLION
-                + Decimal(usage.cached_input_tokens)
-                * LLM_CACHED_INPUT_USD_PER_MILLION
-                + Decimal(usage.output_tokens) * LLM_OUTPUT_USD_PER_MILLION
-            ) / Decimal(1_000_000)
+            rates = TOKEN_PRICES.get((provider, normalized_model), {})
+            if _matches_pricing_model(normalized_model, provider):
+                rates = {"input": LLM_INPUT_USD_PER_MILLION, "cached_input": LLM_CACHED_INPUT_USD_PER_MILLION,
+                         "output": LLM_OUTPUT_USD_PER_MILLION}
+            amounts = {"input": uncached_input, "cached_input": usage.cached_input_tokens, "output": usage.output_tokens}
+            missing = [field for field, count in amounts.items() if count and rates.get(field) is None]
+            cost = sum((Decimal(count) * rates[field] for field, count in amounts.items()
+                        if count and rates.get(field) is not None), Decimal(0)) / Decimal(1_000_000)
+            if missing:
+                self._cost_complete = False
+                stage["estimated_cost_usd"] = None
+                self._cost_issues.add(f"{provider}/{normalized_model}: missing {', '.join(missing)} rate")
             self._estimated_cost += cost
             if stage["estimated_cost_usd"] is not None:
                 stage["estimated_cost_usd"] = round(stage["estimated_cost_usd"] + float(cost), 8)
@@ -115,20 +132,33 @@ class UsageCollector:
             stage["runs"] += 1
             stage["latency_ms"] = round(stage["latency_ms"] + latency_ms, 2)
 
-    def record_embeddings(self, payload: Mapping, stage_name: str) -> None:
+    def record_embeddings(self, payload: Mapping, stage_name: str, *, provider: str | None = None) -> None:
         usage = payload.get("usage", {})
         tokens = usage.get("prompt_tokens", usage.get("total_tokens"))
+        model = str(payload.get("model") or EMBEDDING_MODEL)
+        provider = provider or EMBEDDING_PRICING_PROVIDER
+        rate = TOKEN_PRICES.get((provider, model), {}).get("input")
+        if provider == EMBEDDING_PRICING_PROVIDER and model == EMBEDDING_MODEL:
+            rate = EMBEDDING_INPUT_USD_PER_MILLION
         with self._lock:
             stage = self._stages.setdefault(stage_name, {"runs": 0, "latency_ms": 0.0, "llm_calls": 0})
             stage["embedding_calls"] = stage.get("embedding_calls", 0) + 1
             stage["embedding_input_tokens"] = stage.get("embedding_input_tokens", 0) + _non_negative_int(tokens)
             stage.setdefault("embedding_usage_complete", True)
-            if tokens is None:
+            usage_known = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0
+            if not usage_known:
                 stage["embedding_usage_complete"] = False
-            stage["embedding_cost_usd"] = (
-                round(float(Decimal(stage["embedding_input_tokens"]) * EMBEDDING_INPUT_USD_PER_MILLION / Decimal(1_000_000)), 8)
-                if EMBEDDING_INPUT_USD_PER_MILLION is not None and stage["embedding_usage_complete"] else None
-            )
+                self._cost_issues.add(f"{provider}/{model}: embedding token usage unavailable")
+            if rate is None:
+                self._cost_issues.add(f"{provider}/{model}: missing embedding input rate")
+            if rate is None or not usage_known:
+                stage["embedding_cost_usd"] = None
+                self._embedding_cost_complete = False
+            else:
+                cost = Decimal(str(tokens)) * rate / Decimal(1_000_000)
+                self._embedding_cost += cost
+                if stage.get("embedding_cost_usd", 0) is not None:
+                    stage["embedding_cost_usd"] = round(stage.get("embedding_cost_usd", 0) + float(cost), 8)
 
     def record_model_latency(self, name: str, latency_ms: float) -> None:
         with self._lock:
@@ -155,8 +185,13 @@ class UsageCollector:
                 stages={key: dict(value) for key, value in self._stages.items()},
                 embedding_calls=sum(value.get("embedding_calls", 0) for value in self._stages.values()),
                 embedding_input_tokens=sum(value.get("embedding_input_tokens", 0) for value in self._stages.values()),
-                embedding_cost_usd=(None if any(value.get("embedding_calls") and value.get("embedding_cost_usd") is None for value in self._stages.values())
-                                    else round(sum(value.get("embedding_cost_usd") or 0 for value in self._stages.values()), 8)),
+                embedding_cost_usd=round(float(self._embedding_cost), 8) if self._embedding_cost_complete else None,
+                total_token_cost_usd=round(float(self._estimated_cost + self._embedding_cost), 8)
+                    if self._cost_complete and self._embedding_cost_complete else None,
+                known_token_cost_usd=round(float(self._estimated_cost + self._embedding_cost), 8),
+                cost_complete=self._cost_complete and self._embedding_cost_complete,
+                cost_issues=tuple(sorted(self._cost_issues)),
+                pricing_revision=PRICING_REVISION,
             )
 
 
@@ -190,14 +225,14 @@ async def record_provider_response(response) -> None:
         await response.aread()
         payload = response.json()
         if "/embeddings" in str(response.request.url):
-            collector.record_embeddings(payload, "ragas_embeddings")
+            collector.record_embeddings(payload, "ragas_embeddings", provider=JUDGE_PRICING_PROVIDER)
             return
         usage = payload.get("usage", {})
         from types import SimpleNamespace
         message = SimpleNamespace(llm_output={"usage": usage, "model": payload.get("model", "")})
-        collector.record(payload.get("model", ""), _response_usage(message, None))
+        collector.record(payload.get("model", ""), _response_usage(message, None), provider=JUDGE_PRICING_PROVIDER)
     except Exception:
-        collector.record("", None)
+        collector.record("", None, provider=JUDGE_PRICING_PROVIDER)
 
 
 def record_embedding_response(response) -> None:
@@ -262,12 +297,12 @@ class UsageCallbackHandler(BaseCallbackHandler):
             collector.record(self.configured_model, None)
 
 
-def _matches_pricing_model(model: str) -> bool:
-    candidate = model.strip().casefold()
-    priced = LLM_PRICING_MODEL.casefold()
-    return bool(candidate) and (
-        candidate == priced or candidate.startswith(f"{priced}-20")
-    )
+def _matches_pricing_model(model: str, provider: str | None = None) -> bool:
+    provider = provider or LLM_PRICING_PROVIDER
+    actual = TOKEN_PRICES.get((provider, model))
+    configured = TOKEN_PRICES.get((provider, LLM_PRICING_MODEL))
+    return provider == LLM_PRICING_PROVIDER and bool(model) and (
+        model == LLM_PRICING_MODEL or actual is not None and actual is configured)
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:

@@ -5,6 +5,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+from openai import APIConnectionError
+
 from src.app.chat_service import ChatService
 from src.schemas import Decision, Scope
 
@@ -389,6 +392,61 @@ class ChatServiceLangGraphTests(unittest.TestCase):
         self.assertEqual(result.decision, Decision.ERROR)
         self.assertEqual(result.trace["error_type"], "TimeoutError")
         self.assertTrue(self.service.logger.records)
+
+    def test_provider_connection_failure_explains_the_problem_in_both_graph_paths(self) -> None:
+        error = APIConnectionError(
+            message="private provider diagnostic",
+            request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
+        )
+
+        class FailedStream:
+            def stream(self, inputs, *, config, stream_mode):
+                yield {"messages": inputs["messages"]}
+                raise error
+
+        for graph in (FakeGraph(error=error), FailedStream()):
+            with self.subTest(graph=type(graph).__name__):
+                self.service.agent_graph = graph
+                self.service.require_validated_answer = True
+
+                result = self.service.process_query(
+                    {"messages": [{"role": "user", "content": "Revenue?"}]},
+                    thread_id="connection-failure",
+                    scope=Scope(("MSFT",), ("2025",), "10K"),
+                )
+
+                self.assertEqual(result.decision, Decision.ERROR)
+                self.assertEqual(result.trace["error_code"], "provider_unavailable")
+                self.assertIn("could not connect", result.answer)
+                self.assertNotIn("private provider diagnostic", result.answer)
+
+
+    def test_tool_quota_failure_is_not_reported_as_a_bad_question_or_missing_evidence(self):
+        payload = {"plan_validated": False, "plan_attempt_exhausted": True,
+            "error": "Request planning failed.", "error_code": "provider_quota_exhausted",
+            "error_type": "RateLimitError", "retryable": False}
+
+        class QuotaGraph:
+            def invoke(self, inputs, *, config):
+                return {"messages": [*inputs["messages"], {"type": "tool", "name": "plan_financial_request",
+                    "tool_call_id": "plan-1", "content": json.dumps(payload)},
+                    {"type": "ai", "content": "Please rephrase."}]}
+
+        class QuotaStream(QuotaGraph):
+            def stream(self, inputs, *, config, stream_mode):
+                yield self.invoke(inputs, config=config)
+
+        for graph in (QuotaGraph(), QuotaStream()):
+            with self.subTest(graph=type(graph).__name__):
+                self.service.agent_graph = graph
+                self.service.require_validated_answer = True
+                result = self.service.process_query({"messages": [{"role": "user", "content": "Revenue?"}]},
+                    thread_id="quota-failure", scope=Scope(("MSFT",), ("2025",), "10K"))
+                self.assertEqual(result.decision, Decision.ERROR)
+                self.assertEqual(result.trace["error_code"], "provider_quota_exhausted")
+                self.assertFalse(result.trace["retryable"])
+                self.assertIn("billing", result.answer)
+                self.assertNotIn("rephrase", result.answer)
 
 
 if __name__ == "__main__":

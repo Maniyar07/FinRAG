@@ -48,6 +48,9 @@ def has_financial_metric_conflict(source_label: str, target_metric: str) -> bool
     """Reject a locally related table measure with a different quantity type."""
     source_terms = normalize_financial_term(source_label)
     target_terms = normalize_financial_term(target_metric)
+    changes = {"change", "growth", "increase", "decrease", "increased", "decreased", "up", "down", "grew", "rose", "fell"}
+    if target_terms & changes and not source_terms & changes:
+        return True
     if (
         "expense" in source_terms
         and "income" in target_terms
@@ -68,6 +71,9 @@ def has_financial_metric_conflict(source_label: str, target_metric: str) -> bool
 def normalize_financial_term(term: str) -> set[str]:
     """Normalize a metric label into meaningful, lightly singularized tokens."""
     text = re.sub(r"\([^)]*\)", " ", str(term or "").casefold())
+    # Filings use both labels for the monetary subtotal above operating costs.
+    # Quantity-type validation separately distinguishes that amount from a rate.
+    text = re.sub(r"\bgross\s+profit\b", "gross margin", text)
     tokens = re.findall(r"[a-z0-9]+", re.sub(r"[^a-z0-9]+", " ", text))
     return {
         _TOKEN_ALIASES.get(normalized, normalized)

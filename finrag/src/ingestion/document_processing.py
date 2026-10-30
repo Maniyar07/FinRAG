@@ -18,6 +18,9 @@ PAGE_MARKER_RE = re.compile(r"\[PAGE:\s*(\d+)\]")
 INLINE_SPEAKER_RE = re.compile(
     r"^\s*(?P<speaker>[A-Za-z][A-Za-z0-9 .,'\u2019&()/-]{1,100}?)\s*:\s*(?P<body>.*)$"
 )
+TRANSCRIPT_BODY_HEADING_RE = re.compile(
+    r"^(?:full\s+)?(?:(?:conference|earnings)\s+call\s+)?transcript$", re.I
+)
 DATE_RE = re.compile(
     r"\b(January|February|March|April|May|June|July|August|September|October|November|December)"
     r"\s+\d{1,2},\s+20\d{2}\b",
@@ -119,9 +122,9 @@ def extract_first_date(text: str) -> str | None:
 
 def _section_name(text: str) -> str | None:
     compact = re.sub(r"[*#:_\-\u2013\u2014]+", " ", text).strip()
-    if re.search(r"\b(question(?:s)?\s+(?:and|&)\s+answer|q\s*&\s*a)\b", compact, re.I):
+    if re.fullmatch(r"(?:questions?\s+(?:and|&)\s+answers?|q\s*&\s*a)(?:\s+(?:section|session))?", compact, re.I):
         return "Question and Answer"
-    if re.search(r"\b(management discussion|prepared remarks?)\b", compact, re.I):
+    if re.fullmatch(r"(?:management discussion|prepared remarks?)(?:\s+(?:section|presentation))?", compact, re.I):
         return "Prepared Remarks"
     if re.search(r"\b(?:move|open|go)\s+(?:over\s+|up\s+)?to\s+q\s*&?\s*a\b", compact, re.I):
         return "Question and Answer"
@@ -153,15 +156,37 @@ def _looks_like_inline_speaker(text: str) -> bool:
     compact = text.strip(" -*#[]")
     if NON_SPEAKER_LABEL_RE.fullmatch(compact):
         return False
-    if compact.lower() in {"operator", "coordinator", "unidentified analyst"}:
+    if compact.lower() in {"operator", "coordinator", "unidentified analyst", "unknown speaker"}:
         return True
-    return len(compact.split()) >= 2 and _looks_like_name(compact)
+    return len(re.findall(r"\b[A-Z][A-Za-z'\u2019-]*", compact)) >= 2 and _looks_like_name(compact)
+
+
+def _speaker_with_role(text: str) -> tuple[str, str] | None:
+    parts = re.split(r"\s+(?:--|\u2014|\u2013)\s+", text.strip(" *#"), maxsplit=1)
+    if len(parts) == 2 and _looks_like_name(parts[0]) and _looks_like_role(parts[1]):
+        return parts[0], parts[1]
+    return None
 
 
 def format_transcript(blocks: list[str]) -> tuple[str, set[str], set[str]]:
-    """Normalize inline and multi-line speaker turns while preserving source order."""
+    """Normalize the actual call body into speaker turns in source order."""
     cleaned = [clean_text(block) for block in blocks]
     cleaned = [block for block in cleaned if block]
+    boundary = next((index for index, block in enumerate(cleaned)
+        if TRANSCRIPT_BODY_HEADING_RE.fullmatch(block.strip(" #*_:"))), None)
+    if boundary is None:
+        boundary = next((index for index, block in enumerate(cleaned[:-1])
+            if _section_name(block.strip(" #*_:")) == "Prepared Remarks"
+            and (_speaker_with_role(cleaned[index + 1])
+                 or (index + 2 < len(cleaned) and _looks_like_name(cleaned[index + 1])
+                     and _looks_like_role(cleaned[index + 2])))), None)
+    if boundary is not None:
+        # Published call pages may precede the transcript with an article,
+        # participant list and glossary. Those are not spoken turns.
+        cleaned = cleaned[boundary + 1:]
+        end = next((index for index, block in enumerate(cleaned)
+            if re.fullmatch(r"call participants:?", block.strip(" #*_"), re.I)), len(cleaned))
+        cleaned = cleaned[:end]
     output = ["[SECTION: Prepared Remarks]"]
     speakers: set[str] = set()
     sections = {"Prepared Remarks"}
@@ -173,15 +198,6 @@ def format_transcript(blocks: list[str]) -> tuple[str, set[str], set[str]]:
         if block.strip().upper() in {"Q", "A", "Q.", "A."}:
             index += 1
             continue
-        section = _section_name(block)
-        if section and len(block.split()) <= 18:
-            if section != current_section:
-                output.append(f"[SECTION: {section}]")
-                sections.add(section)
-                current_section = section
-            index += 1
-            continue
-
         inline = INLINE_SPEAKER_RE.match(block)
         if inline and _looks_like_inline_speaker(inline.group("speaker")):
             speaker = inline.group("speaker").strip()
@@ -190,8 +206,24 @@ def format_transcript(blocks: list[str]) -> tuple[str, set[str], set[str]]:
             output.append(f"[SPEAKER: {speaker}]" + (f"\n{body}" if body else ""))
             index += 1
             continue
+        section = _section_name(block)
+        if section and len(block.split()) <= 18:
+            if section != current_section:
+                output.append(f"[SECTION: {section}]")
+                sections.add(section)
+                current_section = section
+            output.append(block)
+            index += 1
+            continue
 
         next_block = cleaned[index + 1] if index + 1 < len(cleaned) else ""
+        combined = _speaker_with_role(block)
+        if combined:
+            speaker, role = combined
+            speakers.add(speaker)
+            output.append(f"[SPEAKER: {speaker} | ROLE: {role}]")
+            index += 1
+            continue
         if _looks_like_name(block) and _looks_like_role(next_block):
             speaker = block.strip(" -*#")
             role = next_block.strip()

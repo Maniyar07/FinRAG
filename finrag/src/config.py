@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
 from src.constants import INDEX_LAYOUT_VERSION
+from src.pricing import load_prices
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -33,19 +36,29 @@ COLLECTION_NAME = os.getenv("FINRAG_QDRANT_COLLECTION", "finrag_documents")
 EMBEDDING_MODEL = os.getenv("FINRAG_EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(os.getenv("FINRAG_EMBEDDING_DIMENSIONS", "1536"))
 LLM_MODEL = os.getenv("FINRAG_LLM_MODEL", "gpt-4o-mini")
+EVIDENCE_MODEL = os.getenv("FINRAG_EVIDENCE_MODEL", LLM_MODEL).strip()
 LLM_BASE_URL = os.getenv("FINRAG_LLM_BASE_URL", "").strip() or None
 LLM_API_KEY = os.getenv("FINRAG_LLM_API_KEY", "").strip() or None
 LLM_PRICING_MODEL = os.getenv(
-    "FINRAG_LLM_PRICING_MODEL", "gpt-4o-mini"
+    "FINRAG_LLM_PRICING_MODEL", LLM_MODEL
 ).strip()
+LLM_PRICING_PROVIDER = os.getenv("FINRAG_LLM_PRICING_PROVIDER", urlsplit(LLM_BASE_URL).netloc if LLM_BASE_URL else "openai").strip()
+EMBEDDING_PRICING_PROVIDER = os.getenv("FINRAG_EMBEDDING_PRICING_PROVIDER", "openai").strip()
+JUDGE_PRICING_PROVIDER = os.getenv("FINRAG_JUDGE_PRICING_PROVIDER", "openai").strip()
+PRICING_FILE = Path(os.getenv("FINRAG_PRICING_FILE", str(BASE_DIR / "config" / "model_pricing.json")))
+if not PRICING_FILE.is_absolute():
+    PRICING_FILE = BASE_DIR / PRICING_FILE
+TOKEN_PRICES = load_prices(PRICING_FILE)
 OPENAI_REQUEST_TIMEOUT_SECONDS = float(
     os.getenv("FINRAG_OPENAI_REQUEST_TIMEOUT_SECONDS", "30")
 )
 OPENAI_MAX_RETRIES = int(os.getenv("FINRAG_OPENAI_MAX_RETRIES", "1"))
 
 
-def _usd_per_million(name: str, default: str) -> Decimal:
-    raw_value = os.getenv(name, default).strip()
+def _usd_per_million(name: str, default: Decimal | None) -> Decimal | None:
+    raw_value = os.getenv(name, str(default) if default is not None else "").strip()
+    if not raw_value:
+        return None
     try:
         value = Decimal(raw_value)
     except InvalidOperation as error:
@@ -55,17 +68,16 @@ def _usd_per_million(name: str, default: str) -> Decimal:
     return value
 
 
-# Default gpt-4o-mini text-token prices per 1M tokens. Keep pricing centralized
-# and override these environment variables when the configured model or provider
-# rates change.
+# Existing environment overrides remain supported; defaults come from rate data.
+_llm_prices = TOKEN_PRICES.get((LLM_PRICING_PROVIDER, LLM_PRICING_MODEL), {})
 LLM_INPUT_USD_PER_MILLION = _usd_per_million(
-    "FINRAG_LLM_INPUT_USD_PER_1M", "0.15"
+    "FINRAG_LLM_INPUT_USD_PER_1M", _llm_prices.get("input")
 )
 LLM_CACHED_INPUT_USD_PER_MILLION = _usd_per_million(
-    "FINRAG_LLM_CACHED_INPUT_USD_PER_1M", "0.075"
+    "FINRAG_LLM_CACHED_INPUT_USD_PER_1M", _llm_prices.get("cached_input")
 )
 LLM_OUTPUT_USD_PER_MILLION = _usd_per_million(
-    "FINRAG_LLM_OUTPUT_USD_PER_1M", "0.60"
+    "FINRAG_LLM_OUTPUT_USD_PER_1M", _llm_prices.get("output")
 )
 SEMANTIC_FALLBACK_ENABLED = os.getenv(
     "FINRAG_SEMANTIC_FALLBACK_ENABLED", "false"
@@ -103,8 +115,17 @@ DEBUG_TRACES = os.getenv("FINRAG_DEBUG_TRACES", "false").strip().lower() in {
 AGENT_MAX_ACTIONS = int(os.getenv("FINRAG_AGENT_MAX_ACTIONS", "8"))
 MAX_CONCURRENT_REQUESTS = int(os.getenv("FINRAG_MAX_CONCURRENT_REQUESTS", "4"))
 REQUEST_DEADLINE_SECONDS = float(os.getenv("FINRAG_REQUEST_DEADLINE_SECONDS", "120"))
-_embedding_price = os.getenv("FINRAG_EMBEDDING_INPUT_USD_PER_MILLION", "").strip()
-EMBEDDING_INPUT_USD_PER_MILLION = Decimal(_embedding_price) if _embedding_price else None
+ANSWER_CACHE_MAX_ENTRIES = int(os.getenv("FINRAG_ANSWER_CACHE_MAX_ENTRIES", "32"))
+ANSWER_CACHE_TTL_SECONDS = float(os.getenv("FINRAG_ANSWER_CACHE_TTL_SECONDS", "300"))
+EMBEDDING_INPUT_USD_PER_MILLION = _usd_per_million("FINRAG_EMBEDDING_INPUT_USD_PER_MILLION",
+    TOKEN_PRICES.get((EMBEDDING_PRICING_PROVIDER, EMBEDDING_MODEL), {}).get("input"))
+# Identify the rate data and effective overrides used to calculate this estimate.
+PRICING_REVISION = hashlib.sha256(repr((
+    PRICING_FILE.read_bytes(), LLM_PRICING_PROVIDER, LLM_PRICING_MODEL,
+    LLM_INPUT_USD_PER_MILLION, LLM_CACHED_INPUT_USD_PER_MILLION, LLM_OUTPUT_USD_PER_MILLION,
+    EMBEDDING_PRICING_PROVIDER, EMBEDDING_MODEL, EMBEDDING_INPUT_USD_PER_MILLION,
+    JUDGE_PRICING_PROVIDER,
+)).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -159,6 +180,8 @@ def validate_runtime_config(
         raise ValueError("FINRAG_EMBEDDING_DIMENSIONS must be positive.")
     if not EMBEDDING_MODEL.strip() or not LLM_MODEL.strip():
         raise ValueError("Embedding and LLM model names cannot be empty.")
+    if not EVIDENCE_MODEL:
+        raise ValueError("FINRAG_EVIDENCE_MODEL cannot be empty.")
     if not LLM_PRICING_MODEL:
         raise ValueError("FINRAG_LLM_PRICING_MODEL cannot be empty.")
     if not SEMANTIC_FALLBACK_MODEL:
@@ -167,6 +190,8 @@ def validate_runtime_config(
         raise ValueError("FINRAG_OPENAI_REQUEST_TIMEOUT_SECONDS must be positive.")
     if OPENAI_MAX_RETRIES < 0:
         raise ValueError("FINRAG_OPENAI_MAX_RETRIES cannot be negative.")
+    if ANSWER_CACHE_MAX_ENTRIES < 0 or not 0 < ANSWER_CACHE_TTL_SECONDS < float("inf"):
+        raise ValueError("Answer cache size must be non-negative and TTL finite and positive.")
     if SEMANTIC_FALLBACK_TIMEOUT_SECONDS <= 0:
         raise ValueError("FINRAG_SEMANTIC_FALLBACK_TIMEOUT_SECONDS must be positive.")
     if EMBEDDING_INPUT_USD_PER_MILLION is not None and (not EMBEDDING_INPUT_USD_PER_MILLION.is_finite() or EMBEDDING_INPUT_USD_PER_MILLION < 0):
@@ -205,6 +230,7 @@ def runtime_signature() -> dict[str, str | int]:
         "embedding_model": EMBEDDING_MODEL,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
         "llm_model": LLM_MODEL,
+        "evidence_model": EVIDENCE_MODEL,
     }
 
 COMPRESSION_ENABLED = os.getenv(

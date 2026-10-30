@@ -29,7 +29,7 @@ TABLE_STOP_WORDS = frozenset(
     "a an and all as at by complete data document exact filing financial for from "
     "full give in inside into of on presented primary provide report requested show table the "
     "this to whole with year exactly please me related was follows following "
-    "could would can you it also".split()
+    "could would can you it also distribution breakdown distributed".split()
 )
 PERIOD_ROW_TERMS = frozenset(
     "ended ending fiscal quarter quarters month months day days january february "
@@ -157,7 +157,7 @@ class StructuredDocumentLookup:
             for word in words
             if word not in TABLE_STOP_WORDS
         }
-        terms = {"operation" if term == "operating" else term for term in terms}
+        terms = {"operation" if term == "operating" else "geographic" if term in {"geographical", "geography"} else term for term in terms}
         if {"income", "operation"}.issubset(terms):
             terms.discard("loss")
         # Filings use "statements of operations" and "income statements" for
@@ -250,6 +250,7 @@ class StructuredDocumentLookup:
         return width, {year: tuple(indices) for year, indices in columns.items()}
 
     def _table(self, question: str, scope: Scope) -> DirectAnswer | None:
+        from src.financial.metric_terms import is_metric_match
         group = self._group(scope)
         if group is None:
             return None
@@ -284,8 +285,9 @@ class StructuredDocumentLookup:
                 title_terms = self._terms(title)
                 table = BeautifulSoup(table_match.group(), "html.parser").find("table")
                 header_terms = self._terms(" ".join(cell.get_text(" ", strip=True) for cell in table.find_all("th")))
-                matched = requested_terms & title_terms
-                if not matched or not requested_terms <= title_terms | header_terms:
+                matched = {term for term in requested_terms if term in title_terms | header_terms
+                           or any(is_metric_match(term, actual) for actual in title_terms | header_terms)}
+                if not matched or matched != requested_terms:
                     continue
                 markdown = self.markdown_table(table_match.group())
                 if markdown is None:
@@ -293,7 +295,7 @@ class StructuredDocumentLookup:
                 pages = PAGE_RE.findall(body[: table_match.start()])
                 page = pages[-1] if pages else None
                 unit = next(
-                    (line.strip(" *") for line in between.splitlines() if re.search(r"\b(?:million|thousand|billion)s?\b", line, re.I)),
+                    (line.strip(" *") for line in reversed(between.splitlines()) if re.search(r"\b(?:million|thousand|billion)s?\b", line, re.I)),
                     "",
                 )
                 source = self._source("S1", parent_id, metadata,
@@ -434,9 +436,7 @@ class StructuredDocumentLookup:
                     caption + " " + table.get_text(" ", strip=True),
                     re.IGNORECASE,
                 )
-                if scale_match is None:
-                    continue
-                scale = scale_match.group().lower()
+                scale = scale_match.group().lower() if scale_match else ""
                 evidence = body[heading.start() if heading else 0: table_match.end()]
                 group_terms: set[str] = set()
                 group_label = ""
@@ -513,7 +513,7 @@ class StructuredDocumentLookup:
                     )
                     for year, columns in resolved_columns.items():
                         numeric_cells = [values[column] for column in columns if len(values) > column
-                                         and re.fullmatch(r"\$?\s*\(?-?\d[\d,]*(?:\.\d+)?\)?", values[column])]
+                                         and re.fullmatch(r"\$?\s*\(?-?\d[\d,]*(?:\.\d+)?%?\)?%?", values[column])]
                         if not numeric_cells or len(numeric_cells) != 1 and not include_ambiguous:
                             continue
                         value = numeric_cells[0] if len(numeric_cells) == 1 else None

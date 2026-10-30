@@ -55,9 +55,11 @@ def test_audits_have_fixed_requirement_and_quote_keys_and_accept_a_negative_answ
             quotes=[EvidenceQuote(source_id="S1", excerpt=quote)]) for item, quote in zip(requirements, quotes)],
             [], {}, {"S1": source}, {}, {})
     assert result["complete"] and "not design-locked" in result["answer"]
-    schema = model.with_structured_output.call_args.args[0]
-    assert schema["properties"]["assessments"]["required"] == ["r1", "r2"]
-    assert schema["properties"]["assessments"]["properties"]["r1"]["properties"]["quote_assessments"]["required"] == ["0"]
+    schemas = [call.args[0] for call in model.with_structured_output.call_args_list]
+    assert len(schemas) == 1
+    assert schemas[0]["properties"]["assessments"]["required"] == ["r1", "r2"]
+    assert all(branch["properties"]["quote_assessments"]["required"] == ["0"]
+               for branch in schemas[0]["properties"]["assessments"]["properties"].values())
 
 
 def test_extraction_slots_bind_ids_and_missing_values_are_null():
@@ -116,7 +118,9 @@ def test_planning_constraints_use_paired_scope_when_axis_fields_are_empty():
     properties = model.with_structured_output.call_args.args[0]["$defs"]["PlannedRequirement"]["properties"]
     assert properties["ticker"]["enum"] == ["ACME"]
     assert properties["source_year"]["enum"] == ["2025"]
-    assert properties["kind"]["enum"] == ["fact", "narrative"]
+    assert "kind" not in properties and properties["object_id"]["type"] == "string"
+    outputs = model.with_structured_output.call_args.args[0]["$defs"]["RequestedObject"]["properties"]
+    assert outputs["kind"]["enum"] == ["numeric_value", "explanation", "source_table", "calculation"]
 
 
 def test_source_units_header_overrides_model_currency_guess():
@@ -274,10 +278,11 @@ def test_quote_responsiveness_cannot_override_a_wrong_source_subject():
         "quote_assessments": {"0": {"source_subject": "vehicle division", "source_observation": source["evidence_text"],
             "reason": "The source concerns another division", "scope_matches": False, "answers_question": True}}}}}
     model = SimpleNamespace(with_structured_output=Mock(return_value=SimpleNamespace(invoke=lambda messages: response)))
-    with patch("src.generation.evidence_answer.get_llm_engine", return_value=model), pytest.raises(ValueError, match="responsive stored quotes"):
-        render_evidence_answer({"question": "What is the Widget division margin outlook?", "requirements": [requirement]},
+    with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
+        result = render_evidence_answer({"question": "What is the Widget division margin outlook?", "requirements": [requirement]},
             [RequirementAnswer(requirement_id="r1", quotes=[EvidenceQuote(source_id="S1", excerpt=source["evidence_text"])])],
             [], {}, {"S1": source}, {}, {})
+    assert not result["complete"] and source["evidence_text"] not in result["answer"]
 
 
 def test_one_stored_passage_can_cover_multiple_narrative_requirements():
@@ -292,7 +297,7 @@ def test_one_stored_passage_can_cover_multiple_narrative_requirements():
     assert len(answers) == 2 and answers[0].quotes == answers[1].quotes
 
 
-def test_audit_stores_shared_quotes_once_with_separate_requirement_verdicts():
+def test_audit_presents_literal_evidence_beside_each_requirement_verdict():
     import json
     source = {**SOURCE, "evidence_text": "Widget backlog is strong and deployments will grow next year."}
     requirements = [{**REQUIREMENT, "kind": "narrative", "metric": "backlog"},
@@ -307,8 +312,9 @@ def test_audit_stores_shared_quotes_once_with_separate_requirement_verdicts():
             quotes=[EvidenceQuote(source_id="S1", excerpt=source["evidence_text"])]) for key in ("r1", "r2")],
             [], {}, {"S1": source}, {}, {})
     payload = json.loads(auditor.invoke.call_args.args[0][1].content)
-    assert len(payload["stored_quotes"]) == 1
-    assert payload["claims"][0]["quotes"] == payload["claims"][1]["quotes"]
+    assert payload["claims"][0]["quotes"][0]["text"] == source["evidence_text"]
+    assert auditor.invoke.call_count == 1
+    assert all(claim["quotes"][0]["text"] == source["evidence_text"] for claim in payload["claims"])
     assert len(result["request_coverage"]["assessments"]) == 2
 
 
@@ -317,7 +323,7 @@ def test_narrative_coverage_uses_retained_quotes_and_actual_missing_details(miss
     source = {**SOURCE, "evidence_text": "Widget deployments will grow next year. The vehicle division had record revenue."}
     requirement = {**REQUIREMENT, "kind": "narrative", "metric": "deployment outlook", "subject": "Widget division"}
     response = {"assessments": {"r1": {"reason": "The first quote states the requested outlook",
-        "missing_details": missing_details, "quote_assessments": {
+        "missing_details": missing_details, "retained_evidence_complete": not missing_details, "quote_assessments": {
             "0": {"reason": "Responsive outlook", "scope_matches": True, "answers_question": True},
             "1": {"reason": "Another business and observation", "scope_matches": False, "answers_question": False}}}}}
     model = SimpleNamespace(with_structured_output=Mock(return_value=SimpleNamespace(invoke=lambda messages: response)))
@@ -325,8 +331,8 @@ def test_narrative_coverage_uses_retained_quotes_and_actual_missing_details(miss
         for excerpt in ("Widget deployments will grow next year.", "The vehicle division had record revenue.")])]
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
         if missing_details:
-            with pytest.raises(ValueError, match="Unsupported narrative"):
-                render_evidence_answer({"requirements": [requirement]}, answers, [], {}, {"S1": source}, {}, {})
+            result = render_evidence_answer({"requirements": [requirement]}, answers, [], {}, {"S1": source}, {}, {})
+            assert not result["complete"] and "Evidence gap" in result["answer"]
         else:
             result = render_evidence_answer({"requirements": [requirement]}, answers, [], {}, {"S1": source}, {}, {})
             assert result["complete"] and "vehicle division" not in result["answer"]
@@ -351,7 +357,7 @@ def test_narrative_selection_binds_exact_stored_text(excerpt, valid):
 def test_quote_audit_cannot_apply_a_neighboring_observation_to_a_stored_quote():
     source = {**SOURCE, "evidence_text": "The vehicle division had record revenue. Widget deployments will grow."}
     requirement = {**REQUIREMENT, "kind": "narrative", "metric": "deployment outlook"}
-    response = {"assessments": {"r1": {"reason": "An outlook exists nearby", "missing_details": [],
+    response = {"assessments": {"r1": {"reason": "An outlook exists nearby", "missing_details": [], "retained_evidence_complete": True,
         "quote_assessments": {"0": {"source_observation": "Widget deployments will grow.",
             "reason": "Wrong quote was audited", "scope_matches": True, "answers_question": True}}}}}
     model = SimpleNamespace(with_structured_output=Mock(return_value=SimpleNamespace(invoke=lambda messages: response)))
@@ -381,35 +387,34 @@ def test_quote_rebinding_requires_unique_exact_evidence_in_the_requested_source_
 def test_unknown_business_attribution_only_blocks_a_business_specific_claim(subject):
     source = {**SOURCE, "evidence_text": "Deployment will grow next year."}
     requirement = {**REQUIREMENT, "kind": "narrative", "metric": "deployment outlook", "subject": subject}
-    response = {"assessments": {"r1": {"reason": "The company outlook is reported", "missing_details": [],
+    response = {"assessments": {"r1": {"reason": "The company outlook is reported", "missing_details": [], "retained_evidence_complete": True,
         "quote_assessments": {"0": {"source_subject": None, "reason": "No division is named",
             "scope_matches": True, "answers_question": True}}}}}
     model = SimpleNamespace(with_structured_output=Mock(return_value=SimpleNamespace(invoke=lambda messages: response)))
     answers = [RequirementAnswer(requirement_id="r1", quotes=[EvidenceQuote(source_id="S1", excerpt=source["evidence_text"])])]
     with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
-        if subject:
-            with pytest.raises(ValueError, match="responsive stored quotes"):
-                render_evidence_answer({"requirements": [requirement]}, answers, [], {}, {"S1": source}, {}, {})
-        else:
-            assert render_evidence_answer({"requirements": [requirement]}, answers, [], {}, {"S1": source}, {}, {})["complete"]
+        result = render_evidence_answer({"requirements": [requirement]}, answers, [], {}, {"S1": source}, {}, {})
+        assert result["complete"] is (subject is None)
+        assert (source["evidence_text"] in result["answer"]) is (subject is None)
 
 
 def test_an_observation_cannot_be_the_owner_of_a_business_specific_quote():
     source = {**SOURCE, "evidence_text": "Backlog increased in the vehicle division."}
     requirement = {**REQUIREMENT, "kind": "narrative", "metric": "backlog", "subject": "Widget division"}
-    response = {"assessments": {"r1": {"reason": "A backlog is reported", "missing_details": [],
+    response = {"assessments": {"r1": {"reason": "A backlog is reported", "missing_details": [], "retained_evidence_complete": True,
         "quote_assessments": {"0": {"source_subject": "Backlog", "source_subject_type": "metric_or_action",
             "reason": "Backlog is an observation, not a business", "scope_matches": True, "answers_question": True}}}}}
     model = SimpleNamespace(with_structured_output=Mock(return_value=SimpleNamespace(invoke=lambda messages: response)))
-    with patch("src.generation.evidence_answer.get_llm_engine", return_value=model), pytest.raises(ValueError, match="responsive stored quotes"):
-        render_evidence_answer({"requirements": [requirement]}, [RequirementAnswer(requirement_id="r1",
+    with patch("src.generation.evidence_answer.get_llm_engine", return_value=model):
+        result = render_evidence_answer({"requirements": [requirement]}, [RequirementAnswer(requirement_id="r1",
             quotes=[EvidenceQuote(source_id="S1", excerpt=source["evidence_text"])])], [], {}, {"S1": source}, {}, {})
+    assert not result["complete"] and source["evidence_text"] not in result["answer"]
 
 
 def test_source_owner_schema_uses_evidence_vocabulary_and_excludes_requested_observations():
     source = {**SOURCE, "evidence_text": "Widget backlog remains strong."}
     requirement = {**REQUIREMENT, "kind": "narrative", "metric": "backlog", "subject": "Widget division"}
-    response = {"assessments": {"r1": {"reason": "The Widget business reports backlog", "missing_details": [],
+    response = {"assessments": {"r1": {"reason": "The Widget business reports backlog", "missing_details": [], "retained_evidence_complete": True,
         "quote_assessments": {"0": {"source_subject": "Widget", "source_subject_type": "business_area",
             "source_observation": source["evidence_text"], "reason": "The requested business is named",
             "scope_matches": True, "answers_question": True}}}}}
@@ -419,6 +424,8 @@ def test_source_owner_schema_uses_evidence_vocabulary_and_excludes_requested_obs
             quotes=[EvidenceQuote(source_id="S1", excerpt=source["evidence_text"])])], [], {}, {"S1": source}, {}, {})
     schema = model.with_structured_output.call_args.args[0]
     quote = schema["properties"]["assessments"]["properties"]["r1"]["properties"]["quote_assessments"]["properties"]["0"]
-    anchors = quote["properties"]["source_subject"]["anyOf"][0]["enum"]
-    assert "Widget" in anchors and "backlog" not in anchors
+    assert "enum" not in quote["properties"]["source_subject_index"]
+    assert quote["properties"]["source_subject_index"]["type"] == "integer"
+    from langchain_core.utils.json_schema import dereference_refs
+    assert dereference_refs(quote, full_schema=schema)["properties"]["source_observation"]["type"] == "null"
     assert result["complete"]

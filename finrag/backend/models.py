@@ -258,6 +258,11 @@ class RequestMetricsView(ApiModel):
     embedding_calls: int = Field(default=0, ge=0)
     embedding_input_tokens: int = Field(default=0, ge=0)
     embedding_cost_usd: float | None = Field(default=0.0, ge=0)
+    total_token_cost_usd: float | None = Field(default=None, ge=0)
+    known_token_cost_usd: float = Field(default=0.0, ge=0)
+    cost_complete: bool = True
+    cost_issues: list[str] = Field(default_factory=list)
+    pricing_revision: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def validate_token_totals(self) -> RequestMetricsView:

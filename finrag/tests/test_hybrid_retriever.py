@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from langchain_core.documents import Document
 
@@ -124,6 +126,48 @@ class HybridExpansionTests(unittest.TestCase):
 
         self.assertEqual(context.kwargs["max_parents"], 4)
         self.assertEqual(context.kwargs["max_chars"], 24_000)
+
+
+def test_independent_observations_share_one_embedding_batch_across_locked_groups():
+    scope = Scope(("MSFT", "TSLA"), ("2025",), "10K")
+    embeddings = SimpleNamespace(embed_documents=Mock(return_value=[[1.0], [2.0], [3.0]]))
+    def vector_search(*, embedding, k, filter):
+        ticker = next(condition.match.value for condition in filter.must if condition.key == "metadata.ticker")
+        child = f"{ticker}-{int(embedding[0])}"
+        return [(Document(page_content="Operating drivers and investment evidence.", metadata={
+            **_metadata(child, child), "ticker": ticker}), 0.9)]
+    vectors = SimpleNamespace(embeddings=embeddings,
+        similarity_search_with_score_by_vector=Mock(side_effect=vector_search),
+        similarity_search_with_score=Mock(side_effect=AssertionError("Do not embed each group separately")))
+    context = FakeContextBuilder()
+    retriever = HybridRetriever(vectors, lexical_index=SimpleNamespace(search=lambda *args, **kwargs: []), context_builder=context)
+    retriever.retrieve("costs and investment", scope,
+        requirement_queries=("cost drivers", "investment needs", "cost drivers"), max_parents=4)
+    embeddings.embed_documents.assert_called_once_with(["costs and investment", "cost drivers", "investment needs"])
+    assert vectors.similarity_search_with_score_by_vector.call_count == 6
+    for ticker in scope.tickers:
+        for index, query in ((2, "cost drivers"), (3, "investment needs")):
+            hit = next(child for child in context.ranked if child.parent_id == f"{ticker}-{index}")
+            assert hit.metadata["evidence_queries"] == (query,)
+    assert context.kwargs["max_parents"] == 4
+
+
+def test_facet_fusion_recovers_operating_evidence_over_keyword_only_allocation():
+    scope = Scope(("MSFT",), ("2025",), "10K")
+    operating = Document(page_content="Costs include computing infrastructure, labor and development.", metadata=_metadata("op", "operations"))
+    allocation = {"child_id": "allocation", "text": "Our allocation structure assigns reported costs.",
+                  "metadata": _metadata("allocation", "allocation")}
+    baseline = Document(page_content="Other corporate disclosures.", metadata=_metadata("base", "baseline"))
+    def lexical(query, scope, *, k):
+        return [LexicalHit(allocation, 10.0, 1.0), LexicalHit({"child_id": "op", "text": operating.page_content,
+            "metadata": operating.metadata}, 2.0, 0.5)] if query == "cost structure" else []
+    vectors = SimpleNamespace(embeddings=SimpleNamespace(embed_documents=lambda queries: [[float(index)] for index in range(len(queries))]),
+        similarity_search_with_score_by_vector=lambda *, embedding, **kwargs: [(operating if embedding[0] else baseline, 0.9)])
+    context = FakeContextBuilder()
+    retriever = HybridRetriever(vectors, lexical_index=SimpleNamespace(search=lexical), context_builder=context)
+    retriever.retrieve("business comparison", scope, requirement_queries=("cost structure",))
+    best = max(context.ranked, key=lambda child: child.fused_score)
+    assert best.parent_id == "operations" and best.metadata["evidence_queries"] == ("cost structure",)
 
 
 if __name__ == "__main__":

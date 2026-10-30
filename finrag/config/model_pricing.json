@@ -1,0 +1,31 @@
+{
+  "currency": "USD",
+  "rate_unit": "per_million_tokens",
+  "verified_on": "2026-10-26",
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "providers": {
+    "openai": {
+      "gpt-4o-mini": {
+        "aliases": ["gpt-4o-mini-2024-07-18"],
+        "input": "0.15",
+        "cached_input": "0.075",
+        "output": "0.60"
+      },
+      "gpt-4.1-mini": {
+        "aliases": ["gpt-4.1-mini-2025-04-14"],
+        "input": "0.40",
+        "cached_input": "0.10",
+        "output": "1.60"
+      },
+      "gpt-4.1": {
+        "aliases": ["gpt-4.1-2025-04-14"],
+        "input": "2.00",
+        "cached_input": "0.50",
+        "output": "8.00"
+      },
+      "text-embedding-3-small": {
+        "input": "0.02"
+      }
+    }
+  }
+}

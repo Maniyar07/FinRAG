@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
@@ -10,6 +12,7 @@ from uuid import uuid4
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agent.graph import create_finrag_agent
+from src.app.answer_cache import AnswerCache
 from src.financial.calculator import FinancialCalculator
 from src.generation.llm_engine import get_llm_engine
 from src.generation.answer_guardrails import (
@@ -21,6 +24,8 @@ from src.generation.citations import strip_citations
 from src.ingestion.manifest import available_keys, load_manifest
 from src.config import (
     AGENT_MAX_ACTIONS,
+    ANSWER_CACHE_MAX_ENTRIES,
+    ANSWER_CACHE_TTL_SECONDS,
     LOGS_DIR,
     get_index_paths,
 )
@@ -41,8 +46,9 @@ from src.retrieval.semantic_query_parser import (
 )
 from src.retrieval.scope_policy import resolve_scope
 from src.retrieval.vector_store import FinancialVectorStore
-from src.runtime_errors import classify_runtime_error
+from src.runtime_errors import RuntimeErrorInfo, classify_runtime_error, runtime_error_message
 from src.request_runtime import RequestAborted, check_request
+from src.telemetry import usage_stage
 from src.schemas import (
     ChatResult,
     Decision,
@@ -132,6 +138,8 @@ class ChatService:
             )
             self.semantic_parser = build_semantic_query_parser_from_environment()
             self.logger = self._build_logger()
+            self.answer_cache = (AnswerCache(ANSWER_CACHE_MAX_ENTRIES, ANSWER_CACHE_TTL_SECONDS)
+                if ANSWER_CACHE_MAX_ENTRIES and self.require_validated_answer else None)
         except Exception:
             self.vector_manager.close()
             raise
@@ -164,7 +172,8 @@ class ChatService:
         }
 
     def _record(self, trace: dict) -> None:
-        self.logger.info(json.dumps(trace, ensure_ascii=True, sort_keys=True))
+        self.logger.info(json.dumps({"timestamp_utc": datetime.now(timezone.utc).isoformat(), **trace},
+                                    ensure_ascii=True, sort_keys=True))
 
     def _company_confirmation_message(self) -> str:
         tickers = tuple(sorted({str(key[0]) for key in self.available_keys}))
@@ -465,6 +474,21 @@ class ChatService:
             "calculator_results": calculator_results,
         }
 
+    def _provider_failure_result(self, diagnostics, trace, scope, sources, inherited_fields):
+        failure = next((item for item in reversed(diagnostics["tool_results"])
+            if str(item.get("error_code", "")).startswith("provider_")
+            and not item.get("resolved_in_final_answer")), None)
+        if failure is None:
+            return None
+        info = RuntimeErrorInfo(failure["error_code"], bool(failure.get("retryable")))
+        trace.update(error_code=info.code, retryable=info.retryable,
+                     error_type=failure.get("error_type", "ProviderError"))
+        trace["agent"] = {**trace.get("agent", {}), **diagnostics, "status": "failed"}
+        trace["answer_validation"] = {"checked": True, "valid": False, "reason": "provider_failure"}
+        answer = runtime_error_message(info)
+        self._record({**trace, "decision": Decision.ERROR.value, "answer": answer})
+        return ChatResult(Decision.ERROR, answer, scope, sources, inherited_fields, trace)
+
     def process_query(
         self,
         inputs: dict[str, Any],
@@ -559,12 +583,6 @@ class ChatService:
                                     and not any(self._message_value(item, "name") == "plan_financial_request" for item in messages)):
                                 recovery_reason = "tool_action_budget" if payload.get("action_budget_exhausted") else "retrieval_context_budget"
                                 break
-                    if finalized_payload is None and sum(
-                        self._message_kind(message) == "tool"
-                        and self._message_value(message, "name") == "finalize_financial_answer"
-                        for message in messages
-                    ) >= 2:
-                        recovery_reason = "answer_validation_exhausted"
                     if recovery_reason or finalized_payload:
                         break
             else:
@@ -647,6 +665,10 @@ class ChatService:
             tool_diagnostics = self._agent_tool_diagnostics(messages)
             if request_plan is not None:
                 trace["request_plan"] = request_plan
+            if not (finalized_payload and finalized_payload.get("complete")):
+                failure = self._provider_failure_result(tool_diagnostics, trace, scope, sources, inherited_fields)
+                if failure is not None:
+                    return failure
             if finalized_payload is not None:
                 citation_check = validate_answer_payload(answer, sources)
                 complete = bool(finalized_payload.get("complete"))
@@ -673,7 +695,7 @@ class ChatService:
                     **trace.get("agent", {}), "backend": "langgraph", "selected": True,
                     "status": "completed", "thread_id": graph_run_id, **tool_diagnostics,
                 }
-                self._record({**trace, "decision": decision.value})
+                self._record({**trace, "decision": decision.value, "answer": answer})
                 return ChatResult(decision, answer, scope, sources, inherited_fields, trace)
             answer_validation = {
                 "checked": False,
@@ -850,7 +872,7 @@ class ChatService:
                     for source in sources
                 ],
             }
-            self._record({**trace, "decision": decision.value})
+            self._record({**trace, "decision": decision.value, "answer": answer})
             return ChatResult(
                 decision,
                 answer,
@@ -881,6 +903,9 @@ class ChatService:
                 partial_diagnostics = self._agent_tool_diagnostics(messages)
                 trace["agent"].update(partial_diagnostics)
                 partial_sources = self._agent_sources(messages)
+                failure = self._provider_failure_result(partial_diagnostics, trace, scope, partial_sources, inherited_fields)
+                if failure is not None:
+                    return failure
                 has_plan = any(result.get("plan_validated") for result in partial_diagnostics["tool_results"])
                 if has_plan or getattr(self, "require_validated_answer", False):
                     decision = (Decision.VALIDATION_FAILED if recovery_reason in {"answer_validation_exhausted", "request_plan_validation_failed"}
@@ -895,7 +920,7 @@ class ChatService:
                         decision, "The request plan could not be validated before retrieval. Please rephrase this request." if recovery_reason == "request_plan_validation_failed" else
                         UNVERIFIABLE_RESPONSE if decision == Decision.VALIDATION_FAILED else
                         INSUFFICIENT_EVIDENCE_RESPONSE if decision == Decision.INSUFFICIENT_EVIDENCE else
-                        "The financial research agent could not complete this request. Please try again.",
+                        runtime_error_message(error_info),
                         scope, partial_sources, inherited_fields, trace,
                     )
                 trace["retrieval"] = {
@@ -977,8 +1002,7 @@ class ChatService:
             self._record({**trace, "decision": Decision.ERROR.value})
             return ChatResult(
                 Decision.ERROR,
-                "The financial research agent could not complete this request. "
-                "Please try again.",
+                runtime_error_message(error_info),
                 scope,
                 inherited_fields=inherited_fields,
                 trace=trace,
@@ -1336,13 +1360,22 @@ class ChatService:
                 if content:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_message})
-        result = self.process_query(
-            {"messages": messages},
-            thread_id=thread_id or uuid4().hex,
-            scope=resolution.scope,
-            inherited_fields=resolution.inherited_fields,
-            trace=trace,
-        )
+        def research():
+            return self.process_query({"messages": messages}, thread_id=thread_id or uuid4().hex,
+                scope=resolution.scope, inherited_fields=resolution.inherited_fields, trace=trace)
+        cache = getattr(self, "answer_cache", None)
+        if cache is None:
+            result = research()
+        else:
+            key = json.dumps([getattr(self, "index_version", "unknown"), messages,
+                resolution.inherited_fields, thread_id], sort_keys=True)
+            with usage_stage("finrag.answer_cache"):
+                result, reused = cache.get_or_compute(key, research)
+            if reused:
+                result = replace(result, trace={**result.trace, **trace,
+                    "agent": {**trace["agent"], "status": "cached", "route": "answer_cache"},
+                    "answer_cache": {"hit": True, "source_trace_id": result.trace.get("trace_id")}})
+                self._record({**result.trace, "decision": result.decision.value})
         annotate_current_trace(
             {
                 "final_decision": result.decision.value,

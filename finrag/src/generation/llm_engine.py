@@ -13,6 +13,7 @@ from src.config import (
 )
 from src.telemetry import UsageCallbackHandler
 from src.request_runtime import CancellationCallback
+from src.provider_http import model_http_client
 
 
 def get_llm_engine(
@@ -42,6 +43,7 @@ def get_llm_engine(
         # Never send the embedding provider's OpenAI key to a model server.
         api_key=(LLM_API_KEY or "local") if LLM_BASE_URL else OPENAI_API_KEY,
         base_url=LLM_BASE_URL,
+        http_client=model_http_client(),
         model=selected_model,
         temperature=0.0,
         timeout=request_timeout,

@@ -7,6 +7,10 @@ compression, generation, guardrails, and persisted indexes remain in `src/`.
 For installation, ingestion, architecture, configuration, and evaluation, see the
 main [`README.md`](README.md).
 
+For a step-by-step explanation of request handling, startup, validation, threads,
+and streaming, use the [`FastAPI learning guide`](FASTAPI_LEARNING_GUIDE.md) and its
+[`runnable request lab`](fastapi_learning_lab.py).
+
 ## Start the server
 
 ```powershell
@@ -210,6 +214,19 @@ Conversation history and theme preferences are stored only in browser `localStor
 There is no document upload, prompt editor, or model selector. Markdown and evidence
 are rendered through DOM construction and text nodes rather than trusting
 model-produced HTML.
+
+Successful response metrics include server request latency, with worker queue wait
+and execution recorded in `stages["finrag.api_queue"]` and
+`stages["finrag.api_execution"]`. The browser displays its own duration from
+request dispatch through final stream parsing; the server duration is available
+in the tooltip. This includes transfer and queue time but excludes DOM paint.
+
+The displayed token cost combines chat and embeddings when both are priced. The
+API retains chat-only `estimated_cost_usd`, adds `total_token_cost_usd` and
+`known_token_cost_usd`, and exposes `cost_complete`, `cost_issues` and a
+`pricing_revision`. An incomplete total stays unavailable; a known chat-only
+estimate is labelled as such. Configure rates and run concurrent HTTP evaluation
+using the [evaluation guide](evals/README.md).
 
 ## Verify the API layer
 

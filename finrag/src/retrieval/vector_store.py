@@ -10,6 +10,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 from src.telemetry import record_embedding_response
 from src.request_runtime import check_request
+from src.provider_http import provider_ssl_context
 
 from src.config import (
     COLLECTION_NAME,
@@ -41,7 +42,7 @@ class FinancialVectorStore:
                 f"Index '{self.index_paths.version}' does not exist. Run ingestion first."
             )
         self.index_paths.qdrant_dir.mkdir(parents=True, exist_ok=True)
-        self._embedding_http = httpx.Client(event_hooks={
+        self._embedding_http = httpx.Client(verify=provider_ssl_context(), event_hooks={
             "request": [lambda request: check_request()], "response": [record_embedding_response],
         })
         try:

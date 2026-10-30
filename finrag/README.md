@@ -405,6 +405,7 @@ Full request/response behavior is documented in
 | `FINRAG_INDEX_VERSION` | Yes | empty | Active index for Streamlit and default API index |
 | `FINRAG_API_INDEX_VERSIONS` | API | active index | Comma-separated allowlist of indexes loaded by FastAPI |
 | `FINRAG_LLM_MODEL` | No | `gpt-4o-mini` | Answer-generation model |
+| `FINRAG_EVIDENCE_MODEL` | No | Same as `FINRAG_LLM_MODEL` | Evidence selection, comparison synthesis and semantic audit model |
 | `FINRAG_AGENT_MAX_ACTIONS` | No | `8` | LangGraph model/tool turn budget |
 | `FINRAG_SEMANTIC_FALLBACK_ENABLED` | No | `false` | Enable bounded semantic clarification for unresolved/suspicious queries |
 | `FINRAG_SEMANTIC_FALLBACK_MODEL` | No | answer model | Structured semantic-parser model |
@@ -433,6 +434,8 @@ independent of LangSmith tracing.
 | `FINRAG_MAX_CONTEXT_TOKENS` | `12000` | Request-wide evidence context limit, divided across locked source groups |
 | `FINRAG_MAX_CONCURRENT_REQUESTS` | `4` | Concurrent API workers, including work still stopping after disconnect |
 | `FINRAG_REQUEST_DEADLINE_SECONDS` | `120` | Request deadline, including queue time |
+| `FINRAG_ANSWER_CACHE_MAX_ENTRIES` | `32` | Validated answers retained per index service; `0` disables caching |
+| `FINRAG_ANSWER_CACHE_TTL_SECONDS` | `300` | Maximum answer-cache lifetime in seconds |
 | `FINRAG_MIN_DENSE_SCORE` | `0.20` | Minimum accepted dense score |
 | `FINRAG_MIN_LEXICAL_COVERAGE` | `0.20` | Minimum accepted lexical query coverage |
 | `FINRAG_COMPRESSION_ENABLED` | `true` | Enable extractive parent compression |
@@ -480,8 +483,28 @@ group. Searches return cited context and validated fact IDs; calculations accept
 those IDs rather than model-generated numbers.
 The finalizer checks every planned requirement and calculation, renders numbers
 from validated facts/results, audits narrative excerpts, and identifies partial
-answers explicitly. It permits one evidence-grounded repair.
-`FINRAG_AGENT_MAX_ACTIONS` limits the graph's model/tool turns.
+answers explicitly. Evidence recovery does not consume an answer-validation repair;
+accepted narrative selections are retained and audited again after recovery.
+`FINRAG_AGENT_MAX_ACTIONS` limits research tool actions; routing uses no model calls.
+
+Planning classifies each requested output once; its evidence requirements inherit
+that type. A scalar's units and scale do not create a separate narrative task,
+while explicitly requested explanations remain separate. Narrative point audits
+select literal evidence spans from each point's attached sources and identify
+unsupported assertions. Generated claims cannot serve as their own quotations.
+Numeric prose checks run before synthesis and audit. An interpretation-only
+repair reuses the retained observations without another search; actual evidence
+gaps keep the bounded retrieval recovery.
+
+Exact indexed numeric cells are checked before general search. This path is used
+only when every requested fact is unambiguous, validated, and within the existing
+evidence budgets; otherwise dense/BM25 retrieval and extraction remain available.
+Complete validated answers can be reused for identical scoped messages, history,
+and conversation IDs within one immutable index service. Cache entries expire,
+remain in memory, and are cleared by a service restart. Partial answers and errors
+are not cached. Cache hits receive fresh request IDs and make no research-model
+calls; optional semantic scope resolution still occurs before cache lookup.
+Disable the cache for cold generation benchmarks and report warm-cache results separately.
 
 Retrieval has a request-wide parent, character, and token budget split over the
 planned source groups. `FINRAG_MAX_CONTEXT_TOKENS` defaults to 12,000 evidence
@@ -600,9 +623,19 @@ Run an end-to-end RAGAS evaluation:
 .\.venv\Scripts\python.exe evals\evaluate_ragas.py --index-version phase1-v2
 ```
 
-The live evaluation executes `ChatService.ask`, saves checkpoints under
+The default live evaluation executes `ChatService.ask`, saves checkpoints under
 `evals/results/`, and reports faithfulness, context precision, context recall,
 response relevancy, factual correctness, answer success, and scope-match rates.
+Use `--api-base-url` to evaluate the running application over HTTP and
+`--concurrency` to measure concurrent requests. HTTP reports separate client,
+server and queue latency, with median/p95 summaries. The browser also records
+request time through stream parsing. Browser rendering requires a separate test.
+
+Chat and embedding prices come from [`config/model_pricing.json`](config/model_pricing.json)
+or `FINRAG_PRICING_FILE`. Combined token-cost totals keep application generation
+and RAGAS judging separate, retain known subtotals, and flag missing prices or
+usage. See the [evaluation guide](evals/README.md) for HTTP commands, pricing
+configuration and measurement boundaries.
 
 To evaluate only routing policy against your own CSV suite:
 
@@ -630,6 +663,22 @@ parent, and lexical files were moved together.
 - Cohere requires `COHERE_API_KEY` only when optional reranking is enabled.
 
 Restart the app after editing `.env`; settings are loaded at process startup.
+
+### Connection failure with zero LLM tokens
+
+Check `data/logs/query_traces.jsonl` for the request's `error_code`.
+`provider_unavailable` means a connection failed; it does not establish a billing
+problem. Check the network, proxy, firewall, and configured provider endpoint.
+`provider_tls_error` means HTTPS certificate verification failed. FinRAG uses the
+operating system's trusted certificates for chat and embeddings, including the
+Windows certificate store. If your network uses a private certificate authority,
+install its approved CA certificate in the system trust store or set
+`SSL_CERT_FILE` to an approved PEM CA bundle, then restart the app.
+
+`provider_quota_exhausted` indicates a provider-reported credit or quota problem;
+check billing and usage limits for the organization/project used by the configured
+API key. Failed calls may show zero reported tokens and unavailable cost because
+the provider did not return usage metadata.
 
 ### Reranker warning with no Cohere key
 

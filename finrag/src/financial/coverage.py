@@ -8,7 +8,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from collections.abc import Mapping, Sequence
 
-from src.financial.metric_terms import is_metric_match, normalize_financial_term
+from src.financial.metric_terms import has_financial_metric_conflict, is_metric_match, normalize_financial_term
 from src.financial.models import ValidatedFinancialFact
 
 
@@ -52,13 +52,16 @@ def fact_matches_requirement(
     bound = fact.requirement_id == requirement["requirement_id"]
     if fact.requirement_id and not bound:
         return False
-    if not bound and not is_metric_match(fact.metric, requirement["metric"]):
+    if has_financial_metric_conflict(" ".join(filter(None, [fact.row_label or fact.metric, fact.column_label])), requirement["metric"]):
+        return False
+    metric_bound = bound and "request_evidence_binding" in fact.validation_checks
+    if not metric_bound and not is_metric_match(fact.metric, requirement["metric"]):
         return False
     # Character similarity alone cannot distinguish a long metric's amount from
     # its growth rate. Every requested semantic term must have extracted support.
     requested_terms = normalize_financial_term(requirement["metric"])
     fact_terms = normalize_financial_term(f"{fact.metric} {fact.row_label or ''}")
-    if not bound and not requested_terms.issubset(fact_terms):
+    if not metric_bound and not requested_terms.issubset(fact_terms):
         return False
     requested = normalize_reported_period(str(requirement.get("reported_period") or "")).upper()
     actual = normalize_reported_period(fact.period).upper() + " " + (fact.column_label or "").upper()

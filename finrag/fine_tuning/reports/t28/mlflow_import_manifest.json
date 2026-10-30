@@ -1,0 +1,66 @@
+{
+  "schema_version": "finrag-mlflow-verification-v1",
+  "verified_at_utc": "2026-10-18T11:08:28Z",
+  "mlflow_version": "3.17.1",
+  "experiment_name": "finrag-week8-lora",
+  "experiment_id": "1",
+  "tracking_backend": "local SQLite (generated and not committed)",
+  "import_id": "3f776896b1c14383db5667c77e4c48609ede1aed509e3e5da3ff498b00b3cf97",
+  "dataset_sha256": "ce5ee27758605e8d7cf37583011b42eccaa9af3a6c365c56e4b6b7866cb43f07",
+  "runs": [
+    {
+      "run_key": "training.qlora",
+      "run_name": "01-training-qlora",
+      "run_id": "d0b2a51007d6412fa45726652fb2be5d",
+      "status": "FINISHED"
+    },
+    {
+      "run_key": "quality.base",
+      "run_name": "02-quality-base",
+      "run_id": "be19581dbcdb42b3866ecfc97d528c2c",
+      "status": "FINISHED"
+    },
+    {
+      "run_key": "quality.adapter",
+      "run_name": "03-quality-adapter",
+      "run_id": "2a4d85af89824182bd96fdb9b175f77b",
+      "status": "FINISHED"
+    },
+    {
+      "run_key": "serving.c1.base",
+      "run_name": "04-serving-c1-base",
+      "run_id": "434d5c47449c4aa8b4644e446dbf75e8",
+      "status": "FINISHED"
+    },
+    {
+      "run_key": "serving.c1.adapter",
+      "run_name": "05-serving-c1-adapter",
+      "run_id": "336fcc41549941e5bb55fe5ceeaa8b33",
+      "status": "FINISHED"
+    },
+    {
+      "run_key": "serving.c2.base",
+      "run_name": "06-serving-c2-base",
+      "run_id": "7d1565785ceb457aa77ba86d8f753fc5",
+      "status": "FINISHED"
+    },
+    {
+      "run_key": "serving.c2.adapter",
+      "run_name": "07-serving-c2-adapter",
+      "run_id": "35e0894e87f2495bb02524b8653aec99",
+      "status": "FINISHED"
+    }
+  ],
+  "verification": {
+    "first_import_created": 7,
+    "first_import_skipped": 0,
+    "second_import_created": 0,
+    "second_import_skipped": 7,
+    "database_run_count": 7,
+    "database_statuses": [
+      "FINISHED"
+    ],
+    "unit_tests_passed": 4
+  },
+  "lineage_limitation": "The original Colab training run did not record its Git commit. Import-time Git state is tagged separately, and the runs are marked partial_historical."
+}

@@ -1,0 +1,35 @@
+The shared planning logic was repaired on 29 October 2026 after reproducing the reported demonstration failures. The running FastAPI application was restarted and its health endpoint reports ready on the repaired index.
+
+The revenue comparison failed before retrieval because the planner supplied both a valid subtraction formula and a redundant source requirement for that formula's result. The requirement validator rejected the entire plan. The bounded diagnostic reproduced the same error in both planning attempts.
+
+The transcript comparison had two related issues. The original traces classified the dollar increase as narrative evidence rather than arithmetic. After the first correction, fresh extraction recovered both requested values and the formula was valid, but the planner still requested qualitative synthesis for a numerical comparison. That unnecessary stage introduced a calculated number outside its selected source observations, and the existing verifier correctly rejected it.
+
+The final repair changes two existing production files:
+
+- `src/agent/graph.py`: clarifies the source-observation/formula distinction, places synthesis classification after output planning, and derives synthesis eligibility from the requested output types. Numeric/table/calculation outputs alone cannot introduce a narrative interpretation. Explicit explanation outputs and legacy plans without an output inventory retain their existing interpretation path.
+- `src/agent/tools.py`: canonicalization removes redundant lookup requirements attached to calculated outputs while preserving all referenced operands. Formulas, scope, unknown references, self-dependencies, period bindings and evidence validation remain checked. Separately requested facts and explanations remain in the plan.
+
+Relative to the source saved before this repair, graph.py replaces ten lines with ten lines and tools.py replaces two lines with two lines. There is no net production line increase and no new production function or private helper. No company, year, metric value or complete question is embedded in the production changes.
+
+Five synthetic regression cases cover cross-company and temporal calculations with redundant result lookups, preservation of independent explanations, operand aliases, removal of invented interpretation for numeric-only requests, and preservation of explicitly requested explanations. The final full offline suite passed 741 tests and 70 subtests. The existing dependency deprecation warnings remain.
+
+| Query | Verification | Result |
+|---|---|---|
+| Microsoft/Tesla FY2025 revenue comparison | Fresh HTTP application request after the first correction | Answered and validated: 281,724 million USD, 94,827 million USD and a 186,897 million USD difference. |
+| Microsoft 2024 equipment useful-life explanation | Fresh HTTP application request after the first correction | Answered and validated against the source quotation. The user's latest pre-change trace also shows this question succeeding. |
+| Microsoft 2024/2025 transcript commercial RPO comparison | Fresh intermediate request, followed by an offline replay of its captured provider outputs and retrieved evidence through the final HTTP application | The intermediate request exposed the unwanted synthesis. The final replay answered and validated: 269 billion USD, 368 billion USD and a 99 billion USD increase. No interpretation model was invoked during the final replay. |
+
+The final transcript result is a captured-response and retrieved-evidence replay, not a fresh provider-backed acceptance run of the final revision. The replay executes planning normalization, source/fact validation, calculator execution, finalization, citations and HTTP formatting. Its external transports are blocked. It does not measure fresh model variation, embedding search, latency or overall RAGAS quality.
+
+The user's paid allowance was enforced by a persistent guard capped at fifteen provider attempts, including embedding calls and retries. The ledger records fourteen HTTP 200 provider responses and one failed connection attempt. The final correction and replay made no further paid requests. The old project-wide allowance and older evaluation outputs were not reused or reset.
+
+Artifacts are under `evals/results/`:
+
+- `demo_repair_20261029.json`: shared allowance and the fresh HTTP results.
+- `demo_repair_20261029.capture.jsonl`: captured model requests and responses without authentication headers.
+- `demo_repair_before_20261029/`: pre-change copies of the two production files and the failing traces.
+- `demo_repair_offline_replay_20261029.json`: final transcript HTTP replay and validated answer.
+- `demo_repair_final_20261029.junit.xml`: final full offline suite.
+- `demo_repair_final_20261029.summary.json`: final source hashes, change counts and verification provenance.
+
+Start a new chat in the restarted application to retry the questions. Historical failed messages are not regenerated by a server restart.

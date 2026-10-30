@@ -10,6 +10,7 @@ from pathlib import Path
 from rank_bm25 import BM25Okapi
 
 from src.schemas import Scope
+from src.constants import COMPANY_NAMES
 
 
 # This tokenizer keeps financial terms such as 10-K, non-GAAP, CET1 and 18.2%.
@@ -68,6 +69,14 @@ def tokenize(text: str) -> list[str]:
         for token in TOKEN_RE.findall(text)
         if token.casefold() not in STOPWORDS
     ]
+
+
+def scoped_content_query(text: str, scope: Scope) -> str:
+    """Scope filters already establish identity; rank passages by their content."""
+    identity = " ".join(f"{ticker} {COMPANY_NAMES.get(ticker, '')} {year} FY{year} {kind or ''}"
+                        for ticker, year, kind in scope.retrieval_groups)
+    excluded = set(tokenize(identity)) | {"10-k", "10-ks", "10ks", "filing", "filings", "report", "reports", "annual"}
+    return " ".join(term for term in tokenize(text.replace("\u2019", "'")) if term.removesuffix("'s") not in excluded)
 
 
 @dataclass(frozen=True)

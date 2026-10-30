@@ -46,28 +46,15 @@ class FinancialFactPipeline:
         permitted_scope: Scope,
         requirements: tuple[dict, ...] = (),
     ) -> FactValidationResult:
-        valid_facts = {}
         fact_requirements = tuple(
             item for item in requirements if item.get("kind", "fact") == "fact"
         )
         # Exact statement cells do not need probabilistic extraction. Recover
         # them first so large parent tables are not sent through an LLM when the
         # requested row and reported-period column are already deterministic.
-        for requirement in fact_requirements:
-            years = set(re.findall(
-                r"(?<!\d)(?:19|20)\d{2}(?!\d)",
-                requirement.get("reported_period") or "",
-            ))
-            if len(years) != 1:
-                continue
-            recovered = self.recover_exact_table_row(
-                metric_hint=requirement["metric"],
-                period_year=next(iter(years)),
-                sources=sources,
-                permitted_scope=permitted_scope,
-                requirements=(requirement,),
-            )
-            valid_facts.update((fact.fact_id, fact) for fact in recovered.valid_facts)
+        recovered = self.recover_table_facts(sources=sources, permitted_scope=permitted_scope,
+            requirements=fact_requirements)
+        valid_facts = {fact.fact_id: fact for fact in recovered.valid_facts}
 
         covered_ids = set(fact_coverage(
             fact_requirements, valid_facts.values(), sources,
@@ -184,6 +171,19 @@ class FinancialFactPipeline:
             rejected_facts=tuple(rejected_facts),
         )
 
+    def recover_table_facts(self, *, sources: list[dict], permitted_scope: Scope,
+                            requirements: tuple[dict, ...]) -> FactValidationResult:
+        """Validate exact cells without invoking probabilistic extraction."""
+        facts = {}
+        for requirement in requirements:
+            years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", requirement.get("reported_period") or ""))
+            if requirement.get("kind", "fact") == "fact" and len(years) == 1:
+                result = self.recover_exact_table_row(metric_hint=requirement["metric"],
+                    period_year=next(iter(years)), sources=sources, permitted_scope=permitted_scope,
+                    requirements=(requirement,))
+                facts.update((fact.fact_id, fact) for fact in result.valid_facts)
+        return FactValidationResult(valid_facts=tuple(facts.values()))
+
     def recover_exact_table_row(
         self,
         *,
@@ -197,10 +197,7 @@ class FinancialFactPipeline:
         label = re.sub(r"\s+expenses?$", "", metric_hint, flags=re.IGNORECASE)
         label = re.sub(rf"\b(?:FY\s*)?{re.escape(period_year)}\b", "", label, flags=re.I).strip()
         expected = normalize_financial_term(label)
-        if not expected or requirements and not any(
-            item.get("value_type") in (None, "currency", "per_share")
-            for item in requirements
-        ):
+        if not expected:
             return FactValidationResult(valid_facts=(), rejected_facts=())
         exact_candidates: list[CandidateFinancialFact] = []
         approximate_candidates: list[CandidateFinancialFact] = []
@@ -238,9 +235,6 @@ class FinancialFactPipeline:
                     f"{heading} {table_text}",
                     re.IGNORECASE,
                 )
-                if scale_match is None or not (MONETARY_STATEMENT_RE.search(heading)
-                        or any(item.get("value_type") == "currency" for item in requirements)):
-                    continue
                 section_label = ""
                 for row, values in zip(rows, grid):
                     if values and len(set(values)) == 1 and values[0].strip() and not re.search(r"\d", values[0]):
@@ -281,21 +275,18 @@ class FinancialFactPipeline:
                     # A table-wide monetary scale applies to currency rows, but
                     # never to counts or rates. Per-share rows are monetary too,
                     # with an explicit unit and no millions/billions multiplier.
-                    if re.search(
-                        r"\b(?:units?|percent(?:age)?s?|rates?|ratios?|bps)\b",
-                        measurement_context,
-                        re.I,
-                    ) or (
-                        not is_per_share
-                        and re.search(r"\bshares?\b", measurement_context, re.I)
-                    ):
-                        continue
                     cells = [values[index + len(values) - header_width] for index in columns
                              if 0 < index + len(values) - header_width < len(values)
                              and re.search(r"\d", values[index + len(values) - header_width])]
                     if len(cells) != 1:
                         continue
                     raw = cells[0]
+                    is_percent = "%" in raw
+                    if not is_percent and (re.search(r"\b(?:units?|percent(?:age)?s?|rates?|ratios?|bps)\b", measurement_context, re.I)
+                            or not is_per_share and re.search(r"\bshares?\b", measurement_context, re.I)
+                            or scale_match is None or not (MONETARY_STATEMENT_RE.search(heading)
+                                or any(item.get("value_type") == "currency" for item in requirements))):
+                        continue
                     candidate = CandidateFinancialFact(
                         ticker=str(source["ticker"]),
                         metric=(requirements[0]["metric"] if len(requirements) == 1
@@ -304,9 +295,9 @@ class FinancialFactPipeline:
                         period=normalize_reported_period(period_year, heading + " " + " ".join(
                             " ".join(header) for header_row, header in zip(rows, grid) if header_row.find("th", recursive=False))),
                         raw_value=raw,
-                        unit="per share" if is_per_share else "USD",
-                        scale=None if is_per_share else scale_match.group(0).casefold(),
-                        currency="USD",
+                        unit="percent" if is_percent else "per share" if is_per_share else "USD",
+                        scale=None if is_per_share or is_percent else scale_match.group(0).casefold(),
+                        currency=None if is_percent else "USD",
                         source_id=str(source["id"]),
                         evidence_excerpt=f"{row_label} {period_year} {raw}",
                         row_label=row_label,

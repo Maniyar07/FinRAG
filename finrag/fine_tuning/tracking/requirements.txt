@@ -1,0 +1,2 @@
+# Install in a tracking-only environment; do not mix this with the Colab trainer.
+mlflow==3.17.1
