@@ -1,6 +1,9 @@
 **FinRAG project handover — 30 October 2026**
 
-The current application, tests, evaluation tools, documentation, and experiment
+This release is a snapshot from **30 October 2026**. For the subsequently reviewed
+implementation and documentation status, see [CURRENT_STATE.md](CURRENT_STATE.md).
+
+The application, tests, evaluation tools, documentation, and experiment
 tracking code are on the `langgraph-experiment` branch. The source documents are
 tracked in Git. Download the additional local data from the
 [handover release](https://github.com/Maniyar07/FinRAG/releases/tag/handover-2026-10-30).
@@ -87,7 +90,34 @@ This imports existing reviewed summaries; it does not retrain the model or make
 model-provider requests. See [the tracking README](finrag/fine_tuning/tracking/README.md)
 for the historical experiment's provenance and limitations.
 
-**Backup scope and validation**
+**Update a clone you already restored**
+
+Run the following from the outer repository folder (the one containing this file
+and the inner `finrag/` folder). There is no need to clone again:
+
+```powershell
+git status --short
+git switch langgraph-experiment
+git pull --ff-only origin langgraph-experiment
+git log -1 --oneline
+```
+
+If the terminal is in the inner application folder, run `cd ..` first. Review
+`git status` for your own edits. If Git reports that local changes would be
+overwritten, or that the branches have diverged, preserve those changes and
+resolve the reported condition before retrying. Do not discard work to force an
+update.
+
+This updates tracked source and documentation, including `AGENTS.md` and
+`CURRENT_STATE.md`. Your ignored `.env`, virtual environment, restored indexes,
+model files, and experiment work are not replaced by these Git commands. Release
+archives are separate snapshots and are not downloaded by `git pull`.
+
+For a documentation-only update, no environment recreation, index extraction, or
+training is needed. For later application changes, review the new commit's
+instructions and requirements; restart the server after updating running code.
+
+**Backup scope and validation (30 October 2026 snapshot)**
 
 Credentials and `.env` files, Python environments, bytecode, caches, temporary
 test and audit directories, application query logs under `Data/logs/`, and

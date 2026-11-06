@@ -1,4 +1,19 @@
-# Shared evidence-contract repair
+# Shared evidence-contract repair history
+
+## Status guide (6 November 2026)
+
+This file preserves repair notes from earlier source snapshots. Read
+[CURRENT_STATE.md](../CURRENT_STATE.md) for the reviewed implementation, current
+boundaries, and latest recorded verification. The latest recorded offline run
+at application source `35b8584` passed 759 tests and 70 subtests, including the
+18 dataset-factory tests. It was not a fresh provider-backed quality evaluation.
+
+The dated counts, failed question IDs, next steps, and statements about running
+servers below apply to the historical sessions that produced them. They do not
+describe a server currently running on another computer or automatically define
+today's backlog. Check the relevant implementation, tests, and later evaluation
+reports before reopening a reported issue. The Version 2 proposal has its own
+implementation-status table in `TECHNICAL_DESIGN_DOCUMENT_V2.md`.
 
 ## Recent-query reliability repair (2026-10-14)
 

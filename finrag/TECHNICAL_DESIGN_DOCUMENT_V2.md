@@ -2,13 +2,29 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Proposed; implementation has not started |
-| Document version | 1.0 |
-| Date | 2026-10-14 |
+| Status | Proposed target architecture; some supporting training/tracking tools already exist |
+| Document version | 1.1 |
+| Original design date | 2026-10-14 |
+| Implementation status reviewed | 2026-11-06, application source `35b8584` |
 | Target release | FinRAG Version 2 |
 | Baseline | Current `phase1-v2` application and indexes |
 | Primary tracking decision | MLflow, with an optional W&B implementation behind the same interface |
 | Model-serving target | Local Ollama service |
+
+## Reading this proposal against the current code
+
+The milestones, configuration examples, interfaces, and security architecture in
+this document describe intended Version 2 behavior. They are not evidence that
+the entire design is deployed. Use [CURRENT_STATE.md](../CURRENT_STATE.md) and
+the implementation to establish what actually exists.
+
+| Capability | Implemented today | Still proposed or requiring verification |
+| --- | --- | --- |
+| Dataset/training | Dataset factory, split/export checks, separate QLoRA trainer/notebook, reviewed historical reports and backed-up adapter | Active finalization-schema compatibility and promotion gates for each model role |
+| Experiment tracking | Separate MLflow import of historical training/quality/serving summaries, with partial-lineage tags | Live training hooks, complete new-run lineage, and optional W&B adapter |
+| Chat providers | Compatible endpoint/key configuration and a separate evidence-model setting | Typed role-aware provider/capability selection and local-only policy enforcement |
+| Model serving | Configurable chat endpoint and serving benchmark tools | Integrated Ollama packaging, lifecycle, readiness, and deployment validation |
+| Security | Existing scope/tool restrictions, strict API contracts, safe public errors, deadlines, and cooperative cancellation | The layered PII and prompt-injection policy/redaction system described below |
 
 ## 1. Purpose
 
@@ -28,10 +44,14 @@ refers to a different control, that requirement needs a separate design decision
 FinRAG already has a working evidence-grounded pipeline: scope resolution, hybrid
 retrieval, structured table lookup, financial fact validation, deterministic
 calculations, narrative evidence auditing, citations, FastAPI/Streamlit clients,
-and request tracing. The current verified snapshot passes 467 tests and 66
-subtests, plus 18 fine-tuning dataset tests.
+and request tracing. The original design baseline recorded 467 tests and 66
+subtests, plus 18 fine-tuning dataset tests. The latest recorded offline
+verification is listed separately in [CURRENT_STATE.md](../CURRENT_STATE.md);
+those checks do not establish completion of this proposal.
 
-Version 2 will add four capabilities without weakening those controls:
+The Version 2 target covers four capabilities without weakening those controls;
+the status table above distinguishes existing supporting work from the remaining
+integration and release work:
 
 1. Train a LoRA/QLoRA adapter from reviewed, leakage-safe FinRAG examples.
 2. Package an approved model for local inference through Ollama.
@@ -91,9 +111,10 @@ security gates before migration.
 - Narrative evidence is selected from stored quotations and independently audited.
 - Final answers use validated facts, calculator output, verified quotations, and
   retrieved source IDs.
-- OpenAI is currently used by a single `get_llm_engine()` factory for multiple
-  roles, including planning, agent routing, extraction, selection, synthesis, and
-  audit.
+- The current `get_llm_engine()` factory supports OpenAI-compatible chat endpoints
+  for planning, extraction, selection, synthesis, and audit. Evidence stages can
+  select `FINRAG_EVIDENCE_MODEL`. Graph tool routing is deterministic and does not
+  call a model. A complete role-aware provider interface remains proposed.
 
 ### 4.2 Fine-tuning
 
@@ -106,18 +127,21 @@ The repository already separates dataset construction from training:
 - The trainer refuses to overwrite a non-empty output directory and produces a
   basic training manifest.
 - Training reporting is currently disabled with `report_to="none"`.
+- `fine_tuning/tracking/` separately imports reviewed historical summaries into
+  MLflow. It neither instruments the trainer nor upgrades historical lineage to
+  complete provenance.
 - The example base model is a candidate, not an approved production decision.
 
-### 4.3 Contract mismatch to resolve before training
+### 4.3 Contract mismatch to resolve before runtime promotion
 
 The existing SFT export describes a grounded response using `answer`, `claims`, and
 `source_ids`. The active runtime now finalizes through `RequirementAnswer`,
 `EvidenceSynthesis`, narrative audit, and deterministic rendering. The legacy
 `AnswerGenerator` is not the active LangGraph finalization path.
 
-Before the first Version 2 training run, an architecture test must prove that the
-training completion schema is consumed by the active runtime. The chosen solution
-must be one of:
+Before promoting an adapter into the active Version 2 runtime, an architecture
+test must prove that the training completion schema is consumed by the active
+runtime. The chosen solution must be one of:
 
 1. Export completions matching the active requirement-selection/synthesis schema;
    or
@@ -190,6 +214,10 @@ roles are:
 - `answer_repair`
 - `dataset_teacher`
 - `dataset_reviewer`
+
+`agent_router` is a possible future role only. The current graph router is Python
+policy and makes no model call; this proposal does not establish a deployed
+model-routing stage.
 
 The factory should conceptually expose:
 

@@ -13,6 +13,11 @@ documents. It resolves the requested company, fiscal year, and evidence type bef
 search; combines semantic and exact-term retrieval; checks evidence coverage; and
 returns a cited answer only when the indexed corpus can support it.
 
+For the reviewed implementation boundaries, verification record, and documentation
+map, see [CURRENT_STATE.md](../CURRENT_STATE.md). Contributors should read the
+root [AGENTS.md](../AGENTS.md). The Version 2 design is a proposal; dated repair
+and evaluation reports describe their own source snapshots.
+
 Unlike a general-purpose chatbot, FinRAG is intentionally bounded. It can ask for
 missing scope, reject a conflicting filter, report an unavailable source, or abstain
 when retrieval is weak.
@@ -67,7 +72,9 @@ when retrieval is weak.
 
 ## Bundled corpus and indexes
 
-The repository contains two ready-to-use immutable indexes:
+The [handover release](../HANDOVER.md) supplies saved immutable indexes, including
+the following documented corpora. Source documents are tracked in Git; persisted
+indexes must be restored from the release archives before querying a fresh clone.
 
 | Index | Companies | Fiscal years | Evidence types | Sources | Child chunks |
 |---|---|---|---|---:|---:|
@@ -83,6 +90,10 @@ rejects a request for a missing combination before retrieval.
 ## Quick start
 
 Run all commands from this `finrag/` directory.
+The standard setup below creates `.venv` here. If your existing environment is in
+the outer repository folder, use `..\.venv\Scripts\python.exe` instead of
+`.\.venv\Scripts\python.exe`; [AGENTS.md](../AGENTS.md) shows automatic detection.
+The configuration file remains `finrag/.env` in either case.
 
 ### 1. Create an environment
 
@@ -193,10 +204,15 @@ flowchart LR
         Manifest[(Manifest)]
     end
 
-    subgraph Generation[Grounded generation]
-        Coverage[Evidence and group<br/>coverage checks]
-        LLM[Structured OpenAI answer]
-        Guardrails[Citation and Markdown<br/>validation]
+    subgraph Research[LangGraph research]
+        Cache[Validated answer cache]
+        Graph[Deterministic tool router]
+        Plan[Validated request plan]
+        Lookup[Structured numeric<br/>and statement lookup]
+        Facts[Financial fact validation]
+        Calculate[Calculator over fact IDs]
+        Finalize[Evidence selection, synthesis,<br/>audit and rendering]
+        Guardrails[Citation and output checks]
     end
 
     Browser --> FastAPI
@@ -205,9 +221,15 @@ flowchart LR
     FastAPI --> ChatService
     ChatService --> Scope
     Manifest --> Scope
-    Scope -->|valid search scope| Dense
-    Scope -->|valid search scope| Lexical
+    Scope -->|valid search scope| Cache
     Scope -->|clarify, conflict,<br/>unavailable, out of scope| ChatService
+    Cache -->|miss| Graph
+    Cache -->|complete validated hit| ChatService
+    Graph --> Plan
+    Plan --> Lookup
+    Plan --> Dense
+    Plan --> Lexical
+    Parents --> Lookup
     Qdrant --> Dense
     BM25 --> Lexical
     Dense --> RRF
@@ -215,15 +237,24 @@ flowchart LR
     RRF --> Rerank
     Rerank --> Context
     Parents --> Context
-    Context --> Coverage
-    Coverage -->|sufficient| LLM
-    Coverage -->|weak or incomplete| ChatService
-    LLM --> Guardrails
+    Context --> Facts
+    Lookup --> Facts
+    Facts --> Calculate
+    Facts --> Finalize
+    Calculate --> Finalize
+    Finalize -->|bounded evidence recovery| Graph
+    Finalize --> Guardrails
     Guardrails --> ChatService
     ChatService --> Browser
     ChatService --> Streamlit
     ChatService --> API
 ```
+
+The graph exposes five tools: request planning, scoped search, statement lookup,
+validated calculation, and answer finalization. Routing is deterministic; model
+calls happen inside planning, extraction, selection, synthesis, and audit. Not
+every request needs every stage. See [LangGraph financial agent](#langgraph-financial-agent)
+for evidence budgets, cache behavior, and recovery boundaries.
 
 ### Ingestion architecture
 
@@ -265,8 +296,9 @@ sequenceDiagram
     participant API as FastAPI
     participant Chat as ChatService
     participant Policy as Scope policy
-    participant Search as Hybrid retriever
-    participant Model as Answer generator
+    participant Graph as LangGraph router
+    participant Tools as Scoped research tools
+    participant Final as Evidence finalizer
 
     User->>UI: Ask a financial question
     UI->>API: Question + filters + prior scope + history
@@ -276,24 +308,28 @@ sequenceDiagram
         Policy-->>Chat: Stop decision + explanation
         Chat-->>UI: Actionable response without retrieval
     else scope is searchable
-        Policy->>Search: Resolved retrieval groups
-        Search->>Search: Dense + lexical search, RRF, optional rerank
-        Search->>Search: Load parents and compress extractively
-        Search-->>Chat: Context + scored source records
-        alt evidence is weak or a comparison group is missing
-            Chat-->>UI: Insufficient-evidence response
-        else evidence covers the request
-            Chat->>Model: Question + bounded context + allowed IDs
-            Model-->>Chat: Structured answer + cited IDs
-            Chat->>Chat: Validate citations and Markdown
-            Chat-->>UI: Answer + expanded citations + evidence
+        Chat->>Chat: Check validated-answer cache
+        alt complete cache hit
+            Chat-->>UI: Reused answer with fresh request IDs
+        else uncached research
+            Chat->>Graph: Question, locked scope, bounded history
+            Graph->>Tools: Plan and validate requirements
+            loop Within action and evidence budgets
+                Graph->>Tools: Structured lookup, hybrid search, or calculation
+                Tools-->>Graph: Evidence, validated facts, or calculator results
+                Graph->>Final: Finalize against every planned requirement
+                Final-->>Graph: Validated result or bounded recovery request
+            end
+            Graph-->>Chat: Answer status, sources, and tool diagnostics
+            Chat->>Chat: Check citations and public output contract
+            Chat-->>UI: Complete/partial answer or explicit failure decision
         end
     end
 ```
 
 The main decisions returned by the pipeline are `answered`, `clarify`,
-`scope_conflict`, `data_unavailable`, `out_of_scope`, `insufficient_evidence`, and
-`error`.
+`scope_conflict`, `data_unavailable`, `out_of_scope`, `insufficient_evidence`,
+`validation_failed`, and `error`.
 
 ### Index-build workflow
 
@@ -602,10 +638,17 @@ runtime directory casing consistent when moving this project between platforms.
 Run deterministic unit and API tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest tests fine_tuning/dataset_factory/tests -q
 .\.venv\Scripts\python.exe -m compileall -q backend src tests
 .\.venv\Scripts\python.exe -m pip check
 ```
+
+The application requirements do not include pytest. Install pytest in a development
+environment if needed; the recorded verification used pytest 9.1.1. Including
+`fine_tuning/dataset_factory/tests` explicitly runs its 18 tests as well as the
+application suite. [AGENTS.md](../AGENTS.md) includes interpreter discovery and a
+unique temporary-directory command for Windows/sandboxed runs. For documentation
+changes, check links, paths, commands, and the diff instead of rerunning the suite.
 
 FastAPI tests inject a fake `ChatService`, so they do not call OpenAI, Cohere,
 LlamaParse, or the persisted vector stores.
@@ -705,8 +748,9 @@ fiscal year, and evidence basis explicit.
   or databases.
 - The API's SSE endpoint emits workflow stages and heartbeats, not token-by-token LLM
   output.
-- A disconnected SSE client cannot forcibly stop synchronous work already running in
-  a worker thread.
+- Disconnects and deadlines signal cooperative cancellation checked by graph/tool
+  stages. An in-flight synchronous provider call can finish before the next check;
+  a disconnected client cannot forcibly terminate its worker thread.
 - Local browser history and theme preferences live in `localStorage`; the backend
   does not provide user accounts or persistent conversation storage.
 - The LangGraph agent is scope-locked and uses validated retrieved facts for

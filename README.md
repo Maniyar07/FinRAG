@@ -3,6 +3,10 @@
 Evidence-grounded financial research over SEC 10-K filings and Q4 earnings-call
 transcripts.
 
+For the reviewed implementation status, documentation map, verification record,
+and proposed work, start with [CURRENT_STATE.md](CURRENT_STATE.md). Contributors
+and coding agents should also read [AGENTS.md](AGENTS.md).
+
 The application lives in [`finrag/`](finrag/). Start with the complete
 [`finrag/README.md`](finrag/README.md), which includes:
 
@@ -16,6 +20,7 @@ For HTTP integration details, see the
 
 For the saved model artifacts, experiment data, runtime indexes, evaluation
 results, and restoration instructions, see the [project handover](HANDOVER.md).
+It also explains how to update an existing clone with `git pull --ff-only`.
 
 For a presentation-ready explanation of the business problem, design decisions,
 end-to-end request flow, worked examples, evaluation results, limitations, roadmap,

@@ -3,7 +3,13 @@
 > Audience: engineering manager, product manager, technical reviewers, and new team members  
 > Project phase: Phase 1  
 > Default index: `phase1-v2`  
-> Last repository review: September 17, 2026
+> Runtime/documentation review: November 6, 2026; application source `35b8584`
+
+Start with [CURRENT_STATE.md](../CURRENT_STATE.md) for the reviewed implementation
+and verification boundary. This guide explains the current request path while
+retaining the explicitly historical 60-question evaluation below. The
+[Version 2 design](TECHNICAL_DESIGN_DOCUMENT_V2.md) describes proposed integration
+work; a design entry does not establish that a feature is implemented.
 
 ## 1. Executive summary
 
@@ -41,13 +47,16 @@ child chunks.
 > Before searching, the system resolves that scope and checks whether the requested
 > source actually exists. It then combines semantic vector search with BM25 keyword
 > search, balances evidence across every side of a comparison, optionally reranks
-> the candidates, and restores larger parent passages for context. The answer model
-> receives only this bounded context. Its structured answer is checked for valid
-> source IDs and well-formed financial tables before citations are expanded for the
-> user. If any required evidence is missing, FinRAG asks for clarification or
-> abstains. The current automated suite has 94 passing tests, and the saved 60-item
-> end-to-end evaluation reports a 0.8108 mean across five RAGAS metrics. This is a
-> strong Phase 1 research prototype, with the next priorities being broader corpus
+> the candidates, and restores larger parent passages for context. A LangGraph
+> workflow validates a request plan, financial facts, calculations, and narrative
+> evidence before finalization. The router chooses tools deterministically, while
+> model-assisted stages work over bounded evidence. Source IDs and output contracts
+> are checked before citations reach the user. If scope or evidence is missing,
+> FinRAG asks for clarification, abstains, or identifies the missing evidence
+> explicitly. The latest recorded
+> offline check passed 759 tests and 70 subtests. Historical RAGAS scores describe
+> earlier snapshots; a fresh quality run is needed to assess a changed model.
+> This is a Phase 1 research prototype, with the next priorities being broader corpus
 > coverage, stronger factual evaluation, authentication, rate limiting, and
 > production-scale storage.”
 
@@ -93,6 +102,10 @@ adviser or a live-market terminal.
 
 ## 5. Current corpus and index versions
 
+The source documents are tracked in Git. Restore persisted indexes from the
+handover release using [HANDOVER.md](../HANDOVER.md); they are not supplied by a
+plain clone. These counts describe the documented saved index versions:
+
 | Index | Companies | Years | Document types | Sources | Parent chunks | Child chunks |
 |---|---|---|---|---:|---:|---:|
 | `phase1-v2` (default) | MSFT, TSLA | 2024, 2025 | 10-K, transcript | 8 | 377 | 1,493 |
@@ -124,17 +137,25 @@ flowchart LR
     UI --> Q[Query understanding]
     Q --> P[Scope policy]
     P -->|clarify, reject, unavailable| R[Safe response]
-    P -->|search| H[Hybrid retriever]
+    P -->|search| AC[Validated answer cache]
+    AC -->|hit| UI
+    AC -->|miss| AG[LangGraph deterministic router]
+    AG --> PL[Validated request plan]
+    PL --> SL[Structured numeric and statement lookup]
+    PL --> H[Hybrid retriever]
     H --> D[Dense search in Qdrant]
     H --> B[BM25 lexical search]
     D --> F[Reciprocal-rank fusion]
     B --> F
     F --> C[Optional Cohere reranker]
     C --> X[Parent context and extractive compression]
-    X --> V[Evidence coverage check]
-    V -->|incomplete| R
-    V -->|complete| G[Structured answer generation]
-    G --> A[Citation and Markdown guardrails]
+    X --> V[Source and financial fact validation]
+    SL --> V
+    V --> K[Calculator over validated fact IDs]
+    V --> G[Evidence selection, synthesis and audit]
+    K --> G
+    G -->|bounded evidence recovery| AG
+    G --> A[Citation and output guardrails]
     A --> UI
 ```
 
@@ -144,13 +165,20 @@ flowchart LR
 |---|---|---|
 | Frontend | Chat history, filters, SSE progress, safe rendering, evidence dialog | `frontend/index.html`, `frontend/app.js`, `frontend/styles.css` |
 | API | Strict contracts, lifecycle, response sanitation, CORS, security headers | `backend/main.py`, `backend/models.py`, `backend/service_manager.py` |
-| Orchestration | Executes the end-to-end decision pipeline | `src/app/chat_service.py` |
+| Orchestration | Scope resolution, cache, graph invocation, result adaptation | `src/app/chat_service.py`, `src/app/answer_cache.py` |
+| Research graph | Deterministic routing and five validated research tools | `src/agent/graph.py`, `src/agent/tools.py` |
 | Query policy | Parses intent, resolves scope, handles follow-ups and clarifications | `src/retrieval/query_understanding.py`, `scope_policy.py`, `clarification_policy.py` |
 | Retrieval | Dense search, BM25, rank fusion, optional reranking | `src/retrieval/hybrid_retriever.py`, `lexical_index.py`, `vector_store.py`, `reranker.py` |
 | Context | Parent selection, comparison balancing, extractive compression | `src/retrieval/context_builder.py`, `compression.py` |
-| Generation | Financial prompt, structured output, answer validation, citations | `src/generation/` |
+| Financial evidence | Fact extraction/validation, coverage, units, calculations | `src/financial/`, `src/retrieval/structured_lookup.py` |
+| Finalization | Evidence selection, synthesis, narrative audit, rendering, citations | `src/generation/evidence_answer.py`, `answer_guardrails.py`, `citations.py` |
 | Ingestion | Discovery, parsing, metadata, chunking, storage, manifest | `src/ingestion/`, `ingest_documents.py` |
-| Evaluation | Gold-set validation and RAGAS scoring | `evals/evaluate_ragas.py`, `evals/ragas_gold.json` |
+| Evaluation | Gold-set validation, regression evaluation, RAGAS scoring | `evals/evaluate_ragas.py`, `evals/ragas_gold_90.json`, `evals/README.md` |
+| Fine-tuning | Dataset construction, separate trainer, historical MLflow import | `fine_tuning/dataset_factory/`, `training/`, `tracking/` |
+
+Routing does not make a chat-model call. The planner, extractor, selection,
+synthesis, and audit stages can call models. The legacy `AnswerGenerator` is
+separately tested and is not the active LangGraph finalization path.
 
 ## 7. End-to-end question workflow
 
@@ -163,8 +191,9 @@ sequenceDiagram
     participant API as FastAPI/UI
     participant Chat as ChatService
     participant Scope as Scope policy
-    participant Retrieve as Hybrid retriever
-    participant Gen as Answer generator
+    participant Graph as LangGraph router
+    participant Tools as Scoped research tools
+    participant Final as Evidence finalizer
 
     User->>API: Question + filters + conversation state
     API->>API: Validate request and filter values
@@ -174,18 +203,21 @@ sequenceDiagram
         Scope-->>Chat: clarify/conflict/unavailable/out-of-scope
         Chat-->>API: Decision and actionable explanation
     else valid searchable scope
-        Scope->>Retrieve: Query + exact retrieval groups
-        Retrieve->>Retrieve: Dense + BM25 + RRF + optional rerank
-        Retrieve->>Retrieve: Select parents and compress extractively
-        Retrieve-->>Chat: Context, sources, scores, group coverage
-        alt evidence missing or incomplete
-            Chat-->>API: insufficient_evidence
-        else evidence complete
-            Chat->>Gen: Original question + bounded evidence
-            Gen->>Gen: Generate structured answer and source IDs
-            Gen->>Gen: Validate IDs, citations, and tables
-            Gen-->>Chat: Cited answer or safe fallback
-            Chat-->>API: answered
+        Chat->>Chat: Check validated-answer cache
+        alt complete cache hit
+            Chat-->>API: Cached answer with fresh request IDs
+        else uncached research
+            Chat->>Graph: Question, locked scope, bounded history
+            Graph->>Tools: Plan and validate requirements
+            loop Bounded research and evidence recovery
+                Graph->>Tools: Structured lookup, search, or calculation
+                Tools-->>Graph: Stored evidence, facts, and results
+                Graph->>Final: Check every requirement and calculation
+                Final-->>Graph: Validated result or missing-evidence feedback
+            end
+            Graph-->>Chat: Result and tool diagnostics
+            Chat->>Chat: Check citations and output contracts
+            Chat-->>API: Complete/partial answer or explicit failure decision
         end
     end
     API-->>User: Answer, scope, citations, and evidence excerpts
@@ -239,7 +271,14 @@ wants 10-K evidence, transcript evidence, or both.
 
 ### Step 4: search each required group separately
 
-For every retrieval group, FinRAG performs two searches:
+The graph first creates and validates a request plan. Requirements distinguish
+filing source year from reported period, scalar facts from complete statements
+and narrative explanations, and requested calculations from raw observations.
+Evidence tools cannot widen the locked source scope.
+
+Structured table/numeric lookup can satisfy suitable requests directly from
+indexed parent evidence. Otherwise, for each required source group the search
+tool combines:
 
 - Dense search: OpenAI query embeddings against local Qdrant cosine vectors.
 - Lexical search: BM25 Okapi over persisted child chunks.
@@ -248,9 +287,10 @@ This is important for financial queries. Dense search handles paraphrases such a
 “ability to meet short-term obligations” versus “liquidity,” while BM25 preserves
 exact terms such as `CET1`, `10-K`, `non-GAAP`, dates, and percentages.
 
-The default global candidate budgets are 48 dense and 48 lexical candidates. They
-are divided across requested groups so one company or year does not consume the
-whole search budget.
+The retriever defaults to 48 dense and 48 lexical candidates. The agent supplies
+request/group-specific limits and requirement queries. Parent, character, and
+evidence-token budgets are shared across the request, so one company or year
+cannot consume the entire evidence allowance.
 
 ### Step 5: fuse and threshold candidates
 
@@ -287,9 +327,11 @@ larger parent passages. This parent-child pattern gives the retriever a focused
 search target without removing surrounding definitions, table headers, periods, or
 qualifiers needed to interpret a financial fact.
 
-At most eight parents are normally selected. A comparison can expand this budget to
-at least two parents per required group. Parent selection is round-robin across
-groups, and total context is capped at 48,000 characters.
+The default request limits are eight parents, 48,000 characters, and 12,000
+evidence tokens. The graph divides evidence capacity across planned groups.
+Complete parents and requested metric/table structures are kept whole when they
+fit; diagnostics identify evidence that cannot be included safely. These limits
+bound stored evidence, not the sum of input tokens across every model call.
 
 ### Step 8: compress without rewriting evidence
 
@@ -302,50 +344,40 @@ to rewrite evidence. The compressor preserves:
 - Page, section, and speaker markers.
 - Query-matching blocks and neighboring context.
 
-If the selection rules cannot safely reduce a passage, the full parent is retained.
-Complete-table requests bypass compression.
+If safe reduction would lose a required structure, context construction keeps the
+full parent when it fits or records why it was skipped. Complete-table lookup
+uses the stored indexed table. Refinement avoids repeatedly including a complete
+parent already retained for the request.
 
 ### Step 9: verify evidence coverage
 
-Before generation, the service checks that retrieved sources cover every required
-company-year group. If the user explicitly requested both a 10-K and transcript,
-coverage is checked at company-year-document-type level.
-
-This prevents a comparison answer from being generated with only the easier side of
-the question.
+The tools check sources and facts against every planned requirement, including
+company, source year, document type, reported period, qualifiers, and units.
+Calculations need validated operands. The finalizer checks narrative claims and
+requested details against retained source quotations. A bounded recovery can
+target missing requirements; it cannot widen scope or insert an unsupported fact.
+Remaining gaps are identified in a partial answer or produce an explicit failure.
 
 ### Step 10: generate and validate the answer
 
-The answer model receives:
+`finalize_financial_answer` selects evidence for the validated request plan and
+uses `RequirementAnswer`, `EvidenceSynthesis`, narrative audits, and deterministic
+rendering in `src/generation/evidence_answer.py`. It does not call the legacy
+`AnswerGenerator` that returns only `answer` and `source_ids`.
 
-- The original financial question.
-- A resolved scope label.
-- Up to four recent history messages for reference, never as evidence.
-- Retrieved context with controlled source IDs such as `S1` and `S2`.
-- Rules about fiscal periods, accounting labels, comparisons, calculations, tables,
-  and citations.
+- Numeric answers are rendered from validated facts and calculator results.
+- Narrative points retain literal quotations and source ownership; independent
+  audits check support and requested-detail coverage.
+- Statement results retain indexed rows, columns, units, and completeness
+  diagnostics. Completeness refers to the selected indexed table, not the entire
+  original PDF.
+- Model inputs use bounded evidence for the relevant stage. Full source text is
+  retained in tool state without being repeated in router history.
+- Final citation/output validation constrains declared IDs and displayed sources.
 
-The model returns structured fields: `answer` and `source_ids`. The application then
-checks that:
-
-- Every cited or declared ID exists in the retrieved source set.
-- An answer that needs evidence has usable citations.
-- A requested Markdown table exists and is well formed.
-- Table rows use consistent column counts.
-- Tables contain no more than eight columns per block.
-- Placeholder values, malformed bold markers, and unsafe table formatting are not
-  accepted.
-
-An invalid answer receives one repair attempt. If both attempts fail, the system
-returns an explicit validation-failure response. It does not display arbitrary
-retrieved fragments as a substitute for the requested answer.
-
-Complete named tables and 10-K item lists are read directly from indexed parent
-records after scope resolution when a matching full structure is available. The
-table title is matched against the question; it is not selected by company name
-or a fixed list of statement titles. This keeps every row or item heading
-together and bypasses ranking, compression, and answer generation for those
-requests.
+Research actions, evidence recovery, and final-answer repair have bounded limits.
+Failure to establish a validated answer remains visible as a partial result,
+`insufficient_evidence`, `validation_failed`, or a classified runtime error.
 
 ### Step 11: expand and present citations
 
@@ -363,6 +395,7 @@ speaker. The web UI lets the user open the underlying evidence excerpt.
 | `data_unavailable` | Scope is valid, but the selected index lacks that source | JPM 2025 on `phase1-v2` |
 | `out_of_scope` | Request is outside supported corpus or purpose | “What is Tesla’s live share price?” |
 | `insufficient_evidence` | Retrieval did not support the request or all comparison groups | One side of a comparison lacks evidence |
+| `validation_failed` | A request plan or final answer could not pass its contract | Evidence is present but the requested answer cannot be verified |
 | `error` | Search or generation failed unexpectedly | Model/API failure after normal handling |
 
 This explicit decision model makes failure modes observable to the UI and API
@@ -702,6 +735,10 @@ account-based history persistence.
 
 Run from the `finrag` directory:
 
+If an existing `.venv` is in the outer repository folder, substitute
+`..\.venv\Scripts\python.exe` in the commands below. Keep `.env` in the inner
+`finrag/` folder. See [AGENTS.md](../AGENTS.md) for interpreter detection.
+
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
@@ -828,7 +865,9 @@ server enables `FINRAG_DEBUG_TRACES=true`.
 
 ### Automated tests
 
-The current repository test suite contains 94 passing tests. It covers:
+The last recorded offline run on November 6, 2026 at application source
+`35b8584` passed **759 tests and 70 subtests**, including the 18 dataset-factory
+tests. It covers:
 
 - Query parsing and scope resolution.
 - Follow-up inheritance and clarification accumulation.
@@ -839,21 +878,30 @@ The current repository test suite contains 94 passing tests. It covers:
 - Citation expansion and answer validation.
 - Financial Markdown-table validation.
 - Chat orchestration decisions.
+- Graph/tool planning contracts, fact provenance, calculation and table recovery.
+- Narrative audit, request coverage, context budgets, and validated-answer caching.
+- Provider errors, deadlines, cooperative cancellation, and usage reporting.
 - FastAPI contracts, lifecycle, SSE, errors, trace sanitation, and static assets.
 
 Run it with:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q
+.\.venv\Scripts\python.exe -m pytest tests fine_tuning/dataset_factory/tests -q
 ```
 
-Repository verification on September 17, 2026: **94 passed**. One warning came from
-a deprecated Starlette/AnyIO type alias in a dependency, not a test failure.
+Install pytest in the development environment if needed; it is not included in
+application requirements. The recorded environment used pytest 9.1.1 and emitted
+49 Starlette/AnyIO and LangGraph deprecation warnings. See
+[AGENTS.md](../AGENTS.md) for interpreter discovery and isolated test directories.
+This offline result is not a provider-backed quality or performance evaluation.
 
-### Saved RAGAS evaluation
+### Historical saved RAGAS evaluation
 
-The current result artifact records a real `ChatService.ask` run against
-`phase1-v2`, using `gpt-4o-mini` as the judge, over 60 questions.
+The following 60-question results were reported in this guide's September 17,
+2026 baseline against `phase1-v2`, using `gpt-4o-mini` as judge. They are preserved
+as historical evidence, not a score for the current LangGraph source or a new
+machine. Current runners and the 90-question regression set are documented in
+[evals/README.md](evals/README.md). A fresh run is needed for current quality claims.
 
 | Measure | Saved result |
 |---|---:|
@@ -947,9 +995,9 @@ auditable and reproducible.
    market facts.
 3. **Model dependence:** OpenAI is required for runtime embeddings and generation;
    network or provider failures affect availability.
-4. **Factual accuracy:** Citation validation proves that an ID is allowed, not that
-   every generated interpretation is correct. The saved factual-correctness score
-   is 0.6816.
+4. **Factual accuracy:** Provenance, numeric validation, and narrative audits reduce
+   unsupported answers but do not prove every interpretation correct. The 0.6816
+   factual-correctness score above belongs to the historical baseline.
 5. **Query parser coverage:** Deterministic patterns are explainable but will not
    recognize every possible phrasing. The optional semantic fallback reduces this
    limitation at additional latency and cost.
@@ -959,13 +1007,14 @@ auditable and reproducible.
    has no authentication, authorization, per-user isolation, quotas, or rate limits.
 8. **Conversation persistence:** Browser `localStorage` is device-specific and is
    not secure account storage.
-9. **Streaming cancellation:** A disconnected client stops the async stream, but
-   Python cannot forcibly terminate a synchronous `ChatService.ask()` already
-   running in its worker thread.
+9. **Streaming cancellation:** Deadlines/disconnects signal cooperative cancellation
+   checked by graph/tool stages. An in-flight synchronous provider operation may
+   finish before the next check; Python does not forcibly terminate its thread.
 10. **Source parsing:** PDF layout extraction and transcript speaker detection can
     still be imperfect and should be audited for new document formats.
-11. **Operational deployment:** There is no container, managed secrets workflow,
-    distributed tracing backend, centralized metrics, or production runbook yet.
+11. **Operational deployment:** Local traces, usage metrics, and optional LangSmith
+    tracing exist. Container deployment, managed-secret operations, centralized
+    production monitoring, and a full operations runbook remain future work.
 12. **Evaluation:** A gold answer can itself be incomplete or wrong; automatic
     evaluation must supplement, not replace, expert review.
 
@@ -973,12 +1022,12 @@ auditable and reproducible.
 
 ### Priority 1: improve answer trust
 
-- Perform human audit on the four evaluation rows with errors and a sample of
-  high-scoring rows.
+- Run a fresh baseline on the current source and manually review failures and a
+  sample of successful answers. Keep historical reports tied to their snapshots.
 - Categorize factual-correctness failures into retrieval, parsing, prompt,
   calculation, and judge-reference causes.
-- Add deterministic verification for high-value numeric answers: row label, period,
-  unit, scale, and arithmetic inputs.
+- Extend existing deterministic fact/calculation verification when a confirmed
+  failure exposes a missing row, period, unit, scale, or arithmetic contract.
 - Add regression cases for every confirmed failure.
 
 ### Priority 2: expand corpus safely
@@ -992,10 +1041,12 @@ auditable and reproducible.
 
 - Add authentication, authorization, rate limits, quotas, and user isolation.
 - Move secrets to a managed secret store.
-- Add timeouts and circuit-breaker metrics for external model services.
-- Add structured centralized logs, latency percentiles, decision counts, provider
-  error rates, and token/cost telemetry.
-- Add container and deployment configuration plus health/readiness probes.
+- Extend existing provider timeouts/retries, request deadlines, and cooperative
+  cancellation with production circuit-breaker and capacity monitoring.
+- Export existing request traces and token/cost telemetry into centralized
+  monitoring with latency percentiles, decision counts, and provider error rates.
+- Add container/deployment configuration and deployment-level readiness checks
+  around the existing `/api/health` endpoint.
 - Evaluate a server-hosted Qdrant deployment for concurrency and scale.
 
 ### Priority 4: product improvements
@@ -1004,7 +1055,8 @@ auditable and reproducible.
 - Support saved research sessions and exportable reports.
 - Show clearly separated “reported fact,” “management statement,” and “system
   calculation” labels.
-- Add a coverage panel before the user runs a query.
+- Improve the existing catalogue-driven company/year/document filters and make
+  index coverage easier to understand before querying.
 - Add feedback capture linked to request and trace IDs.
 
 ## 19. Suggested live demo plan
@@ -1061,10 +1113,10 @@ data.
 
 ### 6. Close with quality evidence — 2 minutes
 
-Present the 94 passing tests and the saved RAGAS table. Call out both the strong
-context recall and the factual-correctness improvement opportunity. End with the
-three next priorities: numeric verification, broader coverage, and production
-security/operations.
+Present the dated verification record in [CURRENT_STATE.md](../CURRENT_STATE.md).
+Label any saved RAGAS scores with their original source snapshot; do not present
+the historical table as a new quality run. Discuss current failures, corpus
+coverage, and production security/operations as separate improvement areas.
 
 ### Demo preparation checklist
 
@@ -1114,9 +1166,9 @@ October-December. The source header remains authoritative.
 
 ### “Can it calculate a percentage or total?”
 
-Yes, only when every input is present in retrieved evidence. The prompt requires the
-formula, substituted values, and rounded result. More deterministic numeric checking
-is recommended for the next phase.
+Yes, through the deterministic calculator over validated fact IDs. The result
+records the operation, inputs, units, and sources. Formula-catalog-driven
+multi-step execution is not yet integrated into the graph.
 
 ### “What makes an index reproducible?”
 
@@ -1133,9 +1185,9 @@ database.
 
 ### “What is the most important next technical improvement?”
 
-Analyze factual-correctness failures and add deterministic numeric verification.
-High recall already indicates the system often finds the evidence; the next value is
-ensuring the final interpretation preserves the exact row, period, unit, and scale.
+Establish a fresh baseline, inspect actual failures, and strengthen the relevant
+existing evidence, numeric, or narrative contract. Historical high recall alone
+does not establish present quality or justify bypassing source verification.
 
 ## 21. Glossary
 
@@ -1169,8 +1221,11 @@ finrag/
 │   ├── app.js                   Chat, filters, state, SSE, safe rendering
 │   └── styles.css               Responsive presentation and themes
 ├── src/
-│   ├── app/chat_service.py      End-to-end orchestration
-│   ├── generation/              Prompt, model, citations, output guardrails
+│   ├── app/chat_service.py      Scope, graph invocation, and result adaptation
+│   ├── app/answer_cache.py      Bounded cache of complete validated answers
+│   ├── agent/                   Deterministic graph routing and strict tools
+│   ├── financial/               Fact validation, coverage, units, calculator
+│   ├── generation/              Evidence synthesis/audit, models, citations
 │   ├── ingestion/               Inventory, parsing, cache, chunking, stores
 │   ├── retrieval/               Query policy, search, rerank, context, compression
 │   ├── config.py                Environment and index-path configuration
@@ -1181,6 +1236,7 @@ finrag/
 │   └── indexes/                 Persisted immutable index versions
 ├── evals/                       Gold data, evaluation runner, and results
 ├── tests/                       Automated unit and API tests
+├── fine_tuning/                 Dataset factory, separate training and tracking
 ├── app.py                       Streamlit interface
 ├── ingest_documents.py          Index build command
 ├── README.md                    Setup and reference documentation
